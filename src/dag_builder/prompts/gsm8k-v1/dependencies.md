@@ -1,0 +1,3 @@
+Assign direct dependencies to the FIXED mathematics nodes. Do not change, add, remove, or renumber assertions. Return the direct premise set used by this solution. Given and knowledge nodes are roots; derived and answer nodes require at least one earlier parent. Parents must be sufficient and individually necessary for the stated arithmetic inference.
+
+Return exactly {"parents":[{"node_id":1,"parents":[]}, ...]}, one row per node in original order. Parent IDs must exist, be unique, and be smaller than the target ID. Do not fabricate dependencies merely to force graph connectivity; invalid structures must be routed for review.

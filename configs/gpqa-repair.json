@@ -1,0 +1,15 @@
+{
+  "task_type": "gpqa",
+  "prompt_version": "gpqa-repair-v1",
+  "base_url": "https://proxy.infix-ai.xyz/v1/",
+  "model": "deepseek-v4-flash",
+  "key_env": "JUDGE_API_KEY",
+  "max_tokens": 32768,
+  "timeout_seconds": 600,
+  "workers": 2,
+  "max_calls": 240,
+  "max_reserved_tokens": 14000000,
+  "response_format": "json_object",
+  "thinking": "enabled",
+  "reasoning_effort": "high"
+}

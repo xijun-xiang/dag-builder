@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "infix-dag-builder"
+version = "0.1.0"
+description = "Auditable API-only construction of MMLU, GSM8K and GPQA reference reasoning DAGs"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/xijun-xiang/da-g-builder"
+Issues = "https://github.com/xijun-xiang/da-g-builder/issues"
+
+[project.optional-dependencies]
+source = ["pyarrow>=18"]
+
+[project.scripts]
+dag-builder = "dag_builder.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dag_builder = ["prompts/*/*.md"]

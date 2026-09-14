@@ -1,0 +1,4 @@
+# Editable local package + optional Parquet readers for MMLU/GSM8K.
+# Runtime dependencies are maintained in pyproject.toml (single source of truth).
+# GPQA-only installation: python -m pip install -e .
+-e .[source]

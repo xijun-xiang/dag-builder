@@ -1,0 +1,15 @@
+{
+  "base_url": "https://proxy.infix-ai.xyz/v1/",
+  "model": "deepseek-v4-flash",
+  "key_env": "JUDGE_API_KEY",
+  "temperature": 0.0,
+  "max_tokens": 4096,
+  "timeout_seconds": 180,
+  "workers": 1,
+  "max_calls": 6,
+  "max_reserved_tokens": 50000,
+  "rate_limit_retries": 2,
+  "prompt_version": "gsm8k-v1",
+  "response_format": "json_object",
+  "task_type": "gsm8k"
+}
