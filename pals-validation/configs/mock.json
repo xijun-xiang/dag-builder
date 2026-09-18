@@ -1,0 +1,14 @@
+{
+  "backend": "mock",
+  "model_path": "NOT_A_MODEL",
+  "model_revision": "SYNTHETIC_FIXTURE_ONLY",
+  "device": "cpu",
+  "dtype": "float32",
+  "attention": "sdpa",
+  "max_context": 32768,
+  "max_new_tokens": 2048,
+  "temperatures": [0.3, 0.7, 1.2],
+  "repeats": 8,
+  "seed": 2026091507,
+  "chat_template_kwargs": {}
+}

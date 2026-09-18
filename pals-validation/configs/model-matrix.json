@@ -1,0 +1,11 @@
+{
+  "scope": "Five open-weight models, each with an independent frozen run. Not a download list.",
+  "models": [
+    {"label": "Qwen2.5-7B", "suggested_repository": "Qwen/Qwen2.5-7B-Instruct", "chat_template_kwargs": {}},
+    {"label": "InternLM3-8B", "suggested_repository": "internlm/internlm3-8b-instruct", "chat_template_kwargs": {}, "note": "Native AutoModel support must be checked; remote code is deliberately disabled."},
+    {"label": "Llama-3-8B", "suggested_repository": "meta-llama/Meta-Llama-3-8B-Instruct", "chat_template_kwargs": {}, "note": "Requires the user's existing model license/access; never substitute Llama-3.1."},
+    {"label": "Phi-4-Mini", "suggested_repository": "microsoft/Phi-4-mini-instruct", "chat_template_kwargs": {}},
+    {"label": "Qwen3-14B", "suggested_repository": "Qwen/Qwen3-14B", "chat_template_kwargs": {"enable_thinking": false}, "note": "Explicit visible-step non-thinking profile, not interchangeable with historical thinking runs."}
+  ],
+  "exact_revisions_and_runtime_compatibility": "MUST_BE_VERIFIED_BEFORE_FORMAL_INFERENCE"
+}
