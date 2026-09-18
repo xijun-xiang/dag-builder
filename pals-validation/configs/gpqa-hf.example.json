@@ -1,0 +1,15 @@
+{
+  "backend": "hf",
+  "model_path": "/work/projects/polyullm/xxj/PALS/models/hf/Qwen/Qwen2.5-7B-Instruct",
+  "model_revision": "REPLACE_WITH_EXACT_WEIGHT_REVISION",
+  "device": "cuda:0",
+  "dtype": "bfloat16",
+  "attention": "sdpa",
+  "max_context": 32768,
+  "max_new_tokens": 2048,
+  "temperatures": [0.3, 0.7, 1.2],
+  "repeats": 8,
+  "seed": 2026091507,
+  "cpu_threads": 4,
+  "chat_template_kwargs": {}
+}
