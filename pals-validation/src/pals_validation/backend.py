@@ -1,6 +1,8 @@
-"""Optional local Hugging Face backend; no evalscope dependency or remote code."""
+"""Local Hugging Face backend; custom code only by revision/hash allowlist."""
 import math
+from importlib.metadata import version
 from .metrics import pair
+from .model_policy import local_code_policy
 from .protocol import system_prompt, BoundaryTracker, parse_step, question, step_prefix
 
 
@@ -15,15 +17,19 @@ class HFBackend:
         import torch
         import transformers
         from transformers import AutoModelForCausalLM, AutoTokenizer
+        for package, required in config.get("runtime_versions", {}).items():
+            if version(package) != required:
+                raise ValueError(f"Runtime mismatch: {package} must be {required}")
+        reviewed = local_code_policy(model_path, config)
         self.torch, self.config = torch, config
         torch.set_num_threads(config.get("cpu_threads", 4))
         if torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=False)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=reviewed)
         dtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[config["dtype"]]
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_path, local_files_only=True, trust_remote_code=False,
+            model_path, local_files_only=True, trust_remote_code=reviewed, use_safetensors=True,
             torch_dtype=dtype, attn_implementation=config["attention"])
         self.model.to(config["device"]).eval()
         limit = getattr(self.model.config, "max_position_embeddings", None)

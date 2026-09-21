@@ -47,7 +47,7 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 
 ## 真实模型运行
 
-在已有合规推理环境安装 `pip install -e '.[inference]'`。依赖范围用于安装兼容性，不代替正式实验的环境锁定；首个模型验收后保存 `pip freeze`。所有权重必须已经在本地，后端禁用网络下载与 remote code。
+在已有合规推理环境安装 `pip install -e '.[inference]'`。依赖范围用于安装兼容性，不代替正式实验的环境锁定；每次启动保存 `pip freeze`。所有权重必须已经在本地，后端禁用网络下载，默认禁用自定义模型代码。确需自定义实现的模型必须配置 `reviewed_local_code`：绑定实际 revision、全部 Python 文件的 SHA256 和审查记录；只有核验通过才允许加载本地实现，auto_map 不得指向外部仓库。权重只使用 safetensors。兼容环境用 `runtime_versions` 固定，不在任务内在线安装或替换其他模型的依赖。
 
 复制 `configs/gpqa-hf.example.json` 到项目配置目录，填写真实快照目录、权重 revision、模型支持的 context 上限和 chat template 参数。`model-matrix.json` 仅列出候选标识；不能据此宣称每个模型都已兼容。特别检查 InternLM 的原生 Transformers 支持及 Qwen3 thinking 模式。
 
@@ -76,7 +76,11 @@ CUDA worker 拒绝在 Slurm allocation 之外运行；运行目录必须在获�
 
 ## 续跑与验收
 
-同一 run 重新提交同样的分片：已落盘结果不重算；E2 已保存的生成不重新采样。进程被强杀可能遗留 `workers/<shard>/ACTIVE.lock`，必须先确认旧 Slurm 任务及进程已结束，再人工移走该特定锁；禁止对活跃任务解除锁。未落盘的生成批次只能重跑，不声称恢复了那次未保存的抽样。
+同一 run 重新提交同样的分片：已落盘结果不重算；E2 已保存的生成不重新采样。锁改为 POSIX flock：进程死亡后由操作系统释放，锁文件本身保留，**不要删除它**。启动器在真实输出文件系统上检查互斥与释放；不支持时停止，不能关闭锁强行运行。只支持同一冻结代码的新版本 run，不把旧代码产物直接迁移到新版本继续混算。
+
+完整 canary → E1/E2 的入口为 `python -m pals_validation.campaign --root <模型运行目录>`；明确续跑时添加 `--resume`，不自动重提任务。输入、配置、源代码、分片数必须与初始化时一致，否则拒绝续跑。初始化先在新暂存目录构建，完整后原子发布；中断的暂存目录保留备查，不作为有效 run。每次启动的日志、环境、验收分析与失败原因都保存在独立 `attempts/` 子目录，不覆盖旧记录。已完成分片重新检查产物哈希，再跳过计算。
+
+未落盘的生成批次仍只能重新执行同一个固定 seed，不能声称恢复了那次未保存的抽样。显式续跑是工程恢复，不允许为改善格式覆盖率或实验效果重新抽样。
 
 ```bash
 pals-validation analyze --run /absolute/path/run --output /absolute/path/new-analysis-directory

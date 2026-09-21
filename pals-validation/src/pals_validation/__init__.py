@@ -1,3 +1,3 @@
-"""GPQA-only validation. No cluster, data download or API side effects on import."""
+"""GPQA/HumanEval validation. No cluster, download or API effects on import."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
