@@ -24,6 +24,7 @@ class Config:
     thinking: str | None = None
     reasoning_effort: str | None = None
     solution_source: str = "independent_generation"
+    strict_response_contract: bool = False
 
     def __post_init__(self):
         url = urlparse(self.base_url)
@@ -69,9 +70,13 @@ class Config:
             raise ValueError("prompt version does not match task_type")
         if self.thinking not in (None, "enabled", "disabled"):
             raise ValueError("unsupported thinking mode")
-        if self.reasoning_effort not in (None, "low", "high", "max"):
+        if type(self.strict_response_contract) is not bool:
+            raise ValueError("strict_response_contract must be boolean")
+        if self.reasoning_effort not in (None, "none", "low", "high", "max"):
             raise ValueError("unsupported reasoning effort")
-        if self.reasoning_effort is not None and self.thinking != "enabled":
+        if self.reasoning_effort == "none" and self.thinking != "disabled":
+            raise ValueError("reasoning effort none requires thinking disabled")
+        if self.reasoning_effort in ("low", "high", "max") and self.thinking != "enabled":
             raise ValueError("reasoning effort requires explicit thinking mode")
         if self.prompt_version == "mmlu-thinking-v1" and self.thinking != "enabled":
             raise ValueError("native reasoning protocol requires thinking enabled")
@@ -106,6 +111,8 @@ class Config:
         # Preserve the serialized contract of existing MMLU/GSM8K runs.
         if self.solution_source == "independent_generation":
             value.pop("solution_source")
+        if not self.strict_response_contract:
+            value.pop("strict_response_contract")
         return value
 
     @classmethod

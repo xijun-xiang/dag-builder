@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .client import CallFailure
+from .response_contract import check_response
 from .math_answers import numeric_answers_equivalent
 from .run_status import record_pause
 from .schemas import (
@@ -110,14 +111,52 @@ class Pipeline:
         self._stop = threading.Event()
         self.calls = 0
         self.reserved_tokens = 0
+        self.accounted_tokens = 0
+        self._accounted_responses = set()
+        self._contract_violations = set()
 
     def _restore_budget(self):
         self.calls = 0
         self.reserved_tokens = 0
+        self.accounted_tokens = 0
+        self._accounted_responses.clear()
         for path in self.root.glob("items/*/*/attempt-*/request.json"):
             request = read_json(path)
             self.calls += 1
             self.reserved_tokens += request["reserved_tokens"]
+            self.accounted_tokens += request["reserved_tokens"]
+            if (path.parent / "response.json").exists():
+                self._check_response(
+                    path.parent,
+                    read_json(path.parent / "response.json")["body"],
+                    raise_failure=False,
+                )
+
+    def _check_response(self, attempt, response, *, raise_failure=True):
+        """Persist raw responses first; reject infra failures before stage parsing.
+
+        Cached responses and budget restoration use the same checks. A violation
+        cannot be bypassed with --resilient, resume, or a previously saved output.
+        """
+        request = read_json(attempt / "request.json")
+        check = check_response(
+            request["payload"], response, request["reserved_tokens"],
+            strict=self.config.strict_response_contract,
+        )
+        with self._budget_lock:
+            if attempt not in self._accounted_responses:
+                self.accounted_tokens += (
+                    check["accounted_tokens"] - request["reserved_tokens"]
+                )
+                self._accounted_responses.add(attempt)
+            if check["violations"]:
+                self._contract_violations.add(str(attempt.relative_to(self.root)))
+                self._stop.set()
+        if check["violations"]:
+            write_once(attempt / "contract_check-v1.json", check)
+            if raise_failure:
+                raise CallFailure("response_contract_violation")
+        return response
 
     def _reserve(self, path, request_payload):
         # Conservative byte-based input allowance, not a tokenizer measurement.
@@ -125,14 +164,14 @@ class Pipeline:
         allowance = (
             len(json.dumps(request_payload, ensure_ascii=False).encode())
             + 256
-            + self.config.max_tokens
+            + request_payload["max_tokens"]
         )
         with self._budget_lock:
             if self._stop.is_set():
                 raise CallFailure("paused")
             if (
                 self.calls + 1 > self.config.max_calls
-                or self.reserved_tokens + allowance > self.config.max_reserved_tokens
+                or self.accounted_tokens + allowance > self.config.max_reserved_tokens
             ):
                 self._stop.set()
                 raise CallFailure("budget_exhausted")
@@ -146,6 +185,7 @@ class Pipeline:
             )
             self.calls += 1
             self.reserved_tokens += allowance
+            self.accounted_tokens += allowance
 
     def _call(self, directory, request_payload):
         if self.resilient:
@@ -156,7 +196,9 @@ class Pipeline:
                 cached = read_json(attempt / "request.json")
                 if cached["payload"] != request_payload:
                     raise ValueError("cached request does not match current payload")
-                return read_json(attempt / "response.json")["body"]
+                return self._check_response(
+                    attempt, read_json(attempt / "response.json")["body"]
+                )
             if (attempt / "error.json").exists():
                 if read_json(attempt / "request.json")["payload"] != request_payload:
                     raise ValueError("cached failure request mismatch")
@@ -199,13 +241,7 @@ class Pipeline:
                     self._stop.set()
                 raise
             write_once(attempt / "response.json", {"ended_at": now(), "body": response})
-            total = response.get("usage", {}).get("total_tokens")
-            if (
-                type(total) is int
-                and total > read_json(attempt / "request.json")["reserved_tokens"]
-            ):
-                self._stop.set()  # API accounting exceeded the preflight allowance.
-            return response
+            return self._check_response(attempt, response)
         raise CallFailure("retry_limit_reached")
 
     def _call_resilient(self, directory, request_payload):
@@ -224,7 +260,9 @@ class Pipeline:
                 if read_json(request_file)["payload"] != request_payload:
                     raise ValueError("cached request does not match current payload")
                 if (attempt / "response.json").exists():
-                    return read_json(attempt / "response.json")["body"]
+                    return self._check_response(
+                        attempt, read_json(attempt / "response.json")["body"]
+                    )
                 if (attempt / "error.json").exists():
                     saved = read_json(attempt / "error.json")
                     if saved["category"] not in transient:
@@ -254,13 +292,7 @@ class Pipeline:
                     continue
                 raise
             write_once(attempt / "response.json", {"ended_at": now(), "body": response})
-            total = response.get("usage", {}).get("total_tokens")
-            if (
-                type(total) is int
-                and total > read_json(request_file)["reserved_tokens"]
-            ):
-                self._stop.set()
-            return response
+            return self._check_response(attempt, response)
         raise CallFailure("transient_retries_exhausted")
 
     def stage(self, stage, item, results):
@@ -504,7 +536,6 @@ class Pipeline:
         if through not in stages_for(self.config):
             raise ValueError("unknown stopping stage")
         with run_lock(self.root):
-            self._restore_budget()
             items = read_json(self.root / "items.json")
             selection = read_json(self.root / "selection.json")
             if not items or any(
@@ -519,6 +550,7 @@ class Pipeline:
                 raise ValueError("run config task_type does not match selected items")
             write_once(self.root / "run_config.json", self.config.to_dict())
             write_once(self.root / "implementation.json", implementation())
+            self._restore_budget()
             policy = {
                 "resilient": self.resilient,
                 "isolate_uncertain_failures": self.isolate_uncertain_failures,
@@ -567,6 +599,8 @@ class Pipeline:
                 "results": sorted(results, key=lambda r: r["item_id"]),
                 "attempt_count": self.calls,
                 "reserved_tokens": self.reserved_tokens,
+                "accounted_tokens": self.accounted_tokens,
+                "response_contract_violations": sorted(self._contract_violations),
                 "paused": any(r["status"] == "paused" for r in results)
                 or self._stop.is_set(),
                 "global_stop": self._stop.is_set(),

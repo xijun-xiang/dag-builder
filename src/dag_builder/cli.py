@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .client import APIClient, CallFailure, load_key
 from .config import Config
+from .contract_probe import probe_contract
 from .export import release
 from .gpqa_source import prepare_gpqa
 from .humaneval_source import prepare_humaneval
@@ -74,7 +75,7 @@ def main():
     )
     source.add_argument("--count", type=int, default=30)
     source.add_argument("--seed", type=int, default=20260909)
-    for name in ("probe", "run", "repair"):
+    for name in ("probe", "probe-contract", "run", "repair"):
         command = commands.add_parser(name)
         command.add_argument("--config", required=True, type=Path)
         command.add_argument(
@@ -82,6 +83,8 @@ def main():
             type=Path,
             help="Private credential file path, NEVER a literal key",
         )
+        if name == "probe-contract":
+            command.add_argument("--root", required=True, type=Path)
         if name in ("run", "repair"):
             command.add_argument(
                 "--resilient",
@@ -140,11 +143,13 @@ def main():
                     args.dataset,
                     args.source_parquet,
                 )
-        elif args.command in ("probe", "run", "repair"):
+        elif args.command in ("probe", "probe-contract", "run", "repair"):
             config = Config.load(args.config)
             client = APIClient(config, load_key(config.key_env, args.key_file))
             if args.command == "probe":
                 result = client.probe()
+            elif args.command == "probe-contract":
+                result = probe_contract(args.root, config, client)
             else:
                 progress = lambda row: print(json.dumps(row), flush=True)
                 if args.command == "repair":
@@ -183,6 +188,8 @@ def main():
                 )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if args.command in ("run", "repair") and result["paused"]:
+            return 2
+        if args.command == "probe-contract" and not result["passed"]:
             return 2
         return 0
     except CallFailure as error:

@@ -1,6 +1,6 @@
 # HumanEval：参考代码 → 推理 DAG → PALS E1/E2
 
-状态（2026-09-21）：完成本地代码、官方 164 题静态导入及合成端到端测试；**尚未调用构图模型，尚未通过 HumanEval 真实 GPU canary，不是正式实验结果。** 此模块不执行 Python 解答或测试，不包含 pass@k 评测和 E3。
+状态（2026-09-21）：完成本地代码、官方 164 题静态导入及合成端到端测试；已启动前 5 题真实构图，但因 API 控制不合规暂停，尚无完整通过的 DAG，也未通过 HumanEval 真实 GPU canary。不是正式 PALS 结果。详见 [API 契约修复与验收](api-response-contract.md)。此模块不执行 Python 解答或测试，不包含 pass@k 评测和 E3。
 
 ## 测量对象与不变项
 
@@ -53,7 +53,7 @@ dag-builder prepare-humaneval \
 
 ## 2. 构图（需要另行批准模型调用与预算）
 
-检查并复制 `configs/humaneval-reference.json` 到运行配置目录。默认并发 2，上限 6；调用和 token 预算是硬护栏，不是保证完成全部题目的费用承诺。
+旧模板 `configs/humaneval-reference.json` 保留供历史追溯；新候选 `configs/humaneval-reference-contract-v2.json` 增加严格 API 检查，须先通过 `probe-contract` 再用于新 run。当前代理尚未通过，不要直接照下列构图命令放量。并发上限为 6；客户端请求/预留预算不能代替服务端费用硬限额。
 
 ```bash
 dag-builder run --root /absolute/private/path/humaneval-dag-v1 \

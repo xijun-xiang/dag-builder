@@ -6,6 +6,8 @@
 
 新增 [HumanEval 参考代码解释与 PALS E1/E2](docs/humaneval-validation.md)：本地官方数据导入、模型解释/审核、候选 DAG 导出；不执行代码。真实构图及 GPU canary 尚待验收，不沿用 GPQA canary 的通过结论。
 
+[API 控制与预算保护](docs/api-response-contract.md)：HumanEval 真实构图已因服务参数不合规暂停；严格响应检查和有界探针已实现。候选非思考配置尚未通过代理验收，不自动放开全量。
+
 ## PALS 验证实验（独立子项目）
 
 [pals-validation/](pals-validation/README.md) 将 GPQA-Diamond DAG 用于 E1 换序、E2 固定祖先前缀续写验证，单独安装、单独运行，不改变 DAG Builder 的依赖和 API。只需要 PALS 时可以单独复制这个子目录；真实实验另需数据文件、模型权重及 GPU 推理环境。数学协议、逐 token 证据、续跑与验收说明均在子目录中。

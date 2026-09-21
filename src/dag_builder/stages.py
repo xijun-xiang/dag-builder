@@ -156,31 +156,12 @@ def stage_input(stage, item, results, solution_source="independent_generation"):
     return data
 
 
-def payload(stage, data, config):
-    native = config.prompt_version == "mmlu-thinking-v1"
-    if native or config.task_type == "gpqa":
-        # Explicit labels in every model request; preserve the original item bytes.
-        data = dict(data, question=dict(data["question"]))
-        data["question"]["choices"] = dict(zip("ABCD", data["question"]["choices"]))
+def request_controls(config, *, native_solve=False):
+    """Shared production/probe serialization; never guess provider overrides."""
     request = {
         "model": config.model,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
-        "messages": [
-            {
-                "role": "system",
-                "content": prompt(
-                    stage,
-                    config.prompt_version,
-                    config.task_type,
-                    config.solution_source,
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(data, ensure_ascii=False, sort_keys=True),
-            },
-        ],
     }
     if config.thinking is not None:
         request["thinking"] = {"type": config.thinking}
@@ -190,8 +171,28 @@ def payload(stage, data, config):
         )  # Official thinking mode ignores sampling temperature.
     if config.reasoning_effort is not None:
         request["reasoning_effort"] = config.reasoning_effort
-    if config.response_format is not None and not (native and stage == "solve"):
+    if config.response_format is not None and not native_solve:
         request["response_format"] = {"type": config.response_format}
+    return request
+
+
+def payload(stage, data, config):
+    native = config.prompt_version == "mmlu-thinking-v1"
+    if native or config.task_type == "gpqa":
+        # Explicit labels in every model request; preserve the original item bytes.
+        data = dict(data, question=dict(data["question"]))
+        data["question"]["choices"] = dict(zip("ABCD", data["question"]["choices"]))
+    request = request_controls(config, native_solve=native and stage == "solve")
+    request["messages"] = [
+        {
+            "role": "system",
+            "content": prompt(stage, config.prompt_version, config.task_type, config.solution_source),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(data, ensure_ascii=False, sort_keys=True),
+        },
+    ]
     return request
 
 
