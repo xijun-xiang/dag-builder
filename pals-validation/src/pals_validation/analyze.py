@@ -88,6 +88,7 @@ def analyze(run, output):
     run, output = Path(run), Path(output)
     protocol, config = validate_run(run)
     jobs = read(run / "jobs.json")
+    cases = {c["item_id"]: c for c in read(run / "inputs/cases.json")}
     files = {p.stem: p for p in (run / "results").glob("*.json")}
     expected = {j["job_id"] for j in jobs}
     if set(files) != expected:
@@ -122,7 +123,7 @@ def analyze(run, output):
             for raw, row in zip(generation["rows"], r["rows"]):
                 if any(row.get(key) != value for key, value in raw.items()):
                     raise ValueError("Generation was changed during scoring")
-                parsed = parse_step(raw["raw_text"])
+                parsed = parse_step(raw["raw_text"], cases[job["item_id"]].get("task_type"))
                 valid = parsed["valid"] and raw["finish_reason"] == "boundary"
                 if parsed != raw["parse"] or (row["status"] == "ok") != valid:
                     raise ValueError("Generation validity mismatch")
@@ -151,7 +152,7 @@ def analyze(run, output):
                 writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
                 writer.writeheader()
                 writer.writerows(rows)
-    text = "# GPQA PALS validation 验收\n\n"
+    text = "# PALS validation 验收\n\n"
     text += "真实模型数值记录（不等于科学主张已成立）。\n" if protocol["scientific_evidence"] else "**仅合成 Mock 流程测试，不是模型实验结果。**\n"
     text += f"\n实验：{protocol['experiment']}；完成任务：{len(jobs)}；逐token算术复核通过。\n"
     text += "\n完整统计见 summary.json，逐步骤 g/NLL 见 steps.csv。置信区间按题重采样；合法换序CI含0不表示等效。\n"

@@ -7,7 +7,7 @@ from collections import Counter
 from .run_status import paused_items
 from .storage import digest, read_json, write_bytes_once, write_once
 
-REPORT_TEMPLATE_VERSION = "5"
+REPORT_TEMPLATE_VERSION = "6"
 
 
 def report_title(items, selection):
@@ -22,6 +22,8 @@ def report_title(items, selection):
         return "MMLU DAG 构造试点审查"
     if task_types == {"gpqa"}:
         return "GPQA-Diamond DAG 构造审查"
+    if task_types == {"humaneval"}:
+        return "HumanEval 参考代码解释与 DAG 审查（未执行代码）"
     return "DAG 构造审查"
 
 
@@ -111,12 +113,16 @@ def render(root):
             + "</h2>"
         )
         rendered_question = item["question"]
-        if item.get("task_type") != "gsm8k":
+        if item.get("task_type") not in ("gsm8k", "humaneval"):
             rendered_question += "\n" + "\n".join(
                 f"{label}. {choice}" for label, choice in zip("ABCD", item["choices"])
             )
         blocks.append("<pre>" + html.escape(rendered_question) + "</pre>")
-        blocks.append("<p>数据集答案：" + item["gold_answer"] + "</p>")
+        if item.get("task_type") == "humaneval":
+            blocks.append("<h3>官方参考 completion（未执行）</h3><pre>"
+                          + html.escape(item["canonical_solution"]) + "</pre>")
+        else:
+            blocks.append("<p>数据集答案：" + html.escape(item["gold_answer"]) + "</p>")
         if item.get("task_type") == "gpqa":
             blocks.append(
                 "<h3>GPQA 官方专家 Explanation（未重新生成）</h3><pre>"

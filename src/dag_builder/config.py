@@ -57,12 +57,13 @@ class Config:
             raise ValueError(
                 f"at most {worker_limit} workers are supported for this task"
             )
-        if self.task_type not in ("mmlu", "gsm8k", "gpqa"):
+        if self.task_type not in ("mmlu", "gsm8k", "gpqa", "humaneval"):
             raise ValueError("unknown task_type")
         versions = {
             "mmlu": ("v1", "mmlu-thinking-v1"),
             "gsm8k": ("gsm8k-v1",),
             "gpqa": ("gpqa-reference-v1", "gpqa-repair-v1", "gpqa-revision-v1"),
+            "humaneval": ("humaneval-reference-v1",),
         }[self.task_type]
         if self.prompt_version not in versions:
             raise ValueError("prompt version does not match task_type")
@@ -80,9 +81,15 @@ class Config:
             "official_rationale",
             "canonical_official_rationale",
             "diagnostic_repair_generation",
+            "reference_code_explanation",
         ):
             raise ValueError("unknown solution source")
-        if (
+        if self.task_type == "humaneval":
+            if self.solution_source != "reference_code_explanation":
+                raise ValueError("humaneval requires reference_code_explanation")
+        elif self.solution_source == "reference_code_explanation":
+            raise ValueError("reference_code_explanation requires humaneval")
+        elif (
             self.task_type != "gsm8k"
             and self.solution_source != "independent_generation"
         ):

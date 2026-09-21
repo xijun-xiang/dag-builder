@@ -11,6 +11,7 @@ from .schemas import (
     validate_nodes,
     validate_review,
     validate_solution,
+    validate_code_explanation,
 )
 from .validation import validate_justifications, validate_parents
 
@@ -64,7 +65,9 @@ def prompt(
         "gpqa-revision-v1",
     ):
         raise ValueError("gpqa requires the official-reference protocol")
-    if task_type not in ("mmlu", "gsm8k", "gpqa"):
+    if task_type == "humaneval" and version != "humaneval-reference-v1":
+        raise ValueError("humaneval requires the reference-code protocol")
+    if task_type not in ("mmlu", "gsm8k", "gpqa", "humaneval"):
         raise ValueError("unknown task type")
     filename = (
         "solve-diagnostic-repair.md"
@@ -85,6 +88,9 @@ def prompt(
 
 def reference_solution(item, results):
     """Official references are source data, never a fabricated solve completion."""
+    if item.get("task_type") == "humaneval":
+        return {"answer": item["canonical_solution"], "rationale": results["solve"]["rationale"],
+                "origin": "model_explanation_of_official_code", "reference_execution": "not_executed"}
     if item.get("task_type") == "gpqa":
         return {
             "answer": item["gold_answer"],
@@ -99,6 +105,22 @@ def reference_solution(item, results):
 
 def stage_input(stage, item, results, solution_source="independent_generation"):
     data = {"question": public_question(item)}
+    if item.get("task_type") == "humaneval":
+        require(stage in STAGES, "unknown HumanEval stage")
+        # Tests are intentionally absent; allowlist fields instead of copying source.
+        data["reference_code"] = item["canonical_solution"]
+        data["reference_execution"] = "not_executed"
+        if stage != "solve":
+            data["solution"] = reference_solution(item, results)
+        if stage == "atomize":
+            data["reference_sources"] = {"reference_code": item["canonical_solution"]}
+        if stage in ("dependencies", "justify", "review_dag"):
+            data["nodes"] = results["atomize"]["nodes"]
+        if stage in ("justify", "review_dag"):
+            data["parents"] = results["dependencies"]["parents"]
+        if stage == "review_dag":
+            data["justifications"] = results["justify"]["justifications"]
+        return data
     if item.get("task_type") == "gpqa":
         require(stage in REFERENCE_STAGES, "official-reference protocol has no solve")
         data["reference_sources"] = {
@@ -181,7 +203,9 @@ def validate(stage, value, data, solution_source="independent_generation"):
             "structured answer changed; no repair allowed",
         )
     elif stage == "solve":
-        if solution_source in (
+        if data["question"].get("task_type") == "humaneval":
+            validate_code_explanation(value)
+        elif solution_source in (
             "answer_conditioned_generation",
             "diagnostic_repair_generation",
         ):
@@ -199,6 +223,12 @@ def validate(stage, value, data, solution_source="independent_generation"):
             data["solution"]["rationale"],
             extra_sources=data.get("reference_sources"),
         )
+        if data["question"].get("task_type") == "humaneval":
+            require(value["nodes"][-1]["statement"] == data["reference_code"],
+                    "terminal answer must preserve reference completion verbatim")
+            require(value["nodes"][-1]["source_field"] == "reference_code", "code answer source required")
+            require(all("```" not in n["statement"] for n in value["nodes"][:-1]),
+                    "algorithm steps must not be fenced code")
     elif stage == "dependencies":
         validate_parents(value, data["nodes"])
     elif stage == "justify":

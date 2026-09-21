@@ -10,6 +10,8 @@ from .client import APIClient, CallFailure, load_key
 from .config import Config
 from .export import release
 from .gpqa_source import prepare_gpqa
+from .humaneval_source import prepare_humaneval
+from .humaneval_export import export_validation
 from .pipeline import Pipeline
 from .repair import RepairPipeline
 from .repair_loop import RevisionPipeline
@@ -24,6 +26,13 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    humaneval = commands.add_parser("prepare-humaneval", help="Offline pinned HumanEval reference-code import; no execution")
+    humaneval.add_argument("--root", required=True, type=Path)
+    humaneval.add_argument("--source-file", required=True, type=Path)
+    humaneval.add_argument("--revision", required=True)
+    humaneval.add_argument("--expected-sha256", required=True)
+    humaneval.add_argument("--count", type=int, default=164)
+    humaneval.add_argument("--seed", type=int, default=20260921)
     repair_source = commands.add_parser(
         "prepare-repair",
         help="Snapshot terminal GPQA failures without changing their source run",
@@ -95,14 +104,18 @@ def main():
                 action="store_true",
                 help="Explicitly retry prior authentication failures only",
             )
-    for name in ("status", "report", "release"):
+    for name in ("status", "report", "release", "export-humaneval-validation"):
         command = commands.add_parser(name)
         command.add_argument("--root", required=True, type=Path)
         if name == "release":
             command.add_argument("--human-review", required=True, type=Path)
     args = parser.parse_args()
     try:
-        if args.command == "prepare-repair":
+        if args.command == "prepare-humaneval":
+            with run_lock(args.root):
+                result = prepare_humaneval(args.root, args.source_file, args.revision,
+                                          args.expected_sha256, args.count, args.seed)
+        elif args.command == "prepare-repair":
             with run_lock(args.root):
                 result = prepare_repair(args.root, args.source_root)
         elif args.command == "prepare-gpqa":
@@ -164,6 +177,8 @@ def main():
                     if args.command == "status"
                     else str(render(root))
                     if args.command == "report"
+                    else str(export_validation(root))
+                    if args.command == "export-humaneval-validation"
                     else str(release(root, args.human_review))
                 )
         print(json.dumps(result, ensure_ascii=False, indent=2))

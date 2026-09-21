@@ -47,9 +47,20 @@ class MathQuestion:
 
 
 def public_question(item):
+    if item.get("task_type") == "humaneval":
+        require(text(item.get("question")), "empty HumanEval prompt")
+        require(text(item.get("entry_point")) and item["entry_point"].isidentifier(), "invalid entry point")
+        return {"task_type": "humaneval", "question": item["question"], "entry_point": item["entry_point"]}
     if item.get("task_type") == "gsm8k":
         return {"task_type": "gsm8k", **MathQuestion(item["question"]).to_dict()}
     return Question(item["question"], tuple(item["choices"])).to_dict()
+
+
+def validate_code_explanation(value):
+    require(isinstance(value, dict) and set(value) == {"rationale"},
+            "reference explanation must contain only rationale, not rewritten code")
+    require(text(value["rationale"]), "empty algorithm explanation")
+    require("```" not in value["rationale"], "algorithm explanation must be prose, not fenced code")
 
 
 def validate_solution(value):
@@ -180,7 +191,7 @@ def validate_nodes(value, question, rationale, extra_sources=None):
         require(text(node.get("statement")), "empty assertion")
         field = node.get("source_field")
         require(field in sources, "invalid source field")
-        if field == "correct_answer":
+        if field in ("correct_answer", "reference_code"):
             require(
                 node["kind"] == "answer", "answer label cannot be a reasoning premise"
             )

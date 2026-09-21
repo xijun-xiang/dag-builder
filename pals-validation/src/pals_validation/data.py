@@ -33,7 +33,12 @@ def ancestors(nodes, target):
     return result
 
 
-def normalize(record):
+def normalize(record, benchmark="gpqa"):
+    if benchmark == "humaneval":
+        from .humaneval import normalize_humaneval
+        return normalize_humaneval(record)
+    if benchmark != "gpqa":
+        raise ValueError("Unknown benchmark adapter")
     if record.get("model_accepted") is not True:
         raise ValueError("Input must be an accepted export, not an unreviewed candidate")
     source = record["source"]
@@ -59,6 +64,14 @@ def normalize(record):
         for node in nodes:
             node["parents"] = parents[node["node_id"]]
         origin = "candidate.nodes+candidate.parents"
+    steps = validated_steps(nodes)
+    return {"item_id": record["item_id"], "source_row": source["row"],
+            "domain": source["domain"], "question": source["question"],
+            "choices": source["choices"], "steps": steps, "adapter": origin,
+            "human_approved": record.get("human_approved", False)}
+
+
+def validated_steps(nodes, minimum=2):
     topological(nodes)
     seen = set()
     for node in nodes:
@@ -70,11 +83,8 @@ def normalize(record):
             raise ValueError("Original node list is not topological; do not silently reorder")
         seen.add(node["node_id"])
     steps = [n for n in nodes if n["kind"] != "answer"]
-    if len(nodes) - len(steps) != 1 or len(steps) < 2:
-        raise ValueError("Exactly one answer and at least two reasoning steps required")
+    if len(nodes) - len(steps) != 1 or len(steps) < minimum:
+        raise ValueError("Exactly one answer and sufficient reasoning steps required")
     if any(not set(n["parents"]) <= {s["node_id"] for s in steps} for n in steps):
         raise ValueError("Reasoning step depends on excluded answer")
-    return {"item_id": record["item_id"], "source_row": source["row"],
-            "domain": source["domain"], "question": source["question"],
-            "choices": source["choices"], "steps": steps, "adapter": origin,
-            "human_approved": record.get("human_approved", False)}
+    return steps

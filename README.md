@@ -4,6 +4,8 @@
 
 独立 Python 工具，使用模型 API 完成原子步骤拆分、依赖标注、推理解释和审核。无需 EvalScope、GPU 或 Slurm。支持 MMLU、GSM8K 与 GPQA-Diamond；不是任意 JSONL 的通用清洗器。
 
+新增 [HumanEval 参考代码解释与 PALS E1/E2](docs/humaneval-validation.md)：本地官方数据导入、模型解释/审核、候选 DAG 导出；不执行代码。真实构图及 GPU canary 尚待验收，不沿用 GPQA canary 的通过结论。
+
 ## PALS 验证实验（独立子项目）
 
 [pals-validation/](pals-validation/README.md) 将 GPQA-Diamond DAG 用于 E1 换序、E2 固定祖先前缀续写验证，单独安装、单独运行，不改变 DAG Builder 的依赖和 API。只需要 PALS 时可以单独复制这个子目录；真实实验另需数据文件、模型权重及 GPU 推理环境。数学协议、逐 token 证据、续跑与验收说明均在子目录中。

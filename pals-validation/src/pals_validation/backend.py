@@ -1,7 +1,7 @@
 """Optional local Hugging Face backend; no evalscope dependency or remote code."""
 import math
 from .metrics import pair
-from .protocol import SYSTEM, BoundaryTracker, parse_step, question, step_prefix
+from .protocol import system_prompt, BoundaryTracker, parse_step, question, step_prefix
 
 
 def target_positions(context_length, target_length):
@@ -37,7 +37,7 @@ class HFBackend:
     def context(self, case, ids):
         by_id = {n["node_id"]: n for n in case["steps"]}
         base = self.tokenizer.apply_chat_template(
-            [{"role": "system", "content": SYSTEM}, {"role": "user", "content": question(case)}],
+            [{"role": "system", "content": system_prompt(case)}, {"role": "user", "content": question(case)}],
             tokenize=False, add_generation_prompt=True, **self.config["chat_template_kwargs"])
         return step_prefix(base, [by_id[i]["statement"] for i in ids])
 
@@ -106,7 +106,8 @@ class HFBackend:
                 reason = "length"
             text = tok.decode(tokens, skip_special_tokens=True)
             rows.append({"repeat": index, "seed": seed, "raw_text": text,
-                         "generated_token_ids": tokens, "finish_reason": reason, "parse": parse_step(text)})
+                         "generated_token_ids": tokens, "finish_reason": reason,
+                         "parse": parse_step(text, case.get("task_type"))})
         return {"prompt": prompt, "prompt_token_ids": ids, "rows": rows}
 
 

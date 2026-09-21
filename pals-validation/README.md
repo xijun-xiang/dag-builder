@@ -1,6 +1,8 @@
-# PALS：GPQA-Diamond E1 / E2
+# PALS：GPQA-Diamond / HumanEval E1 / E2
 
-将散落的先导协议整理成独立、可审计的实验代码。不依赖 infi-evalscope；不自动连接集群、下载模型或提交任务。当前只支持 GPQA accepted DAG 导出，不包含 E3。
+将散落的先导协议整理成独立、可审计的实验代码。不依赖 infi-evalscope 或 dag-builder 的 Python 包；不自动连接集群、下载模型或提交任务。支持 GPQA 和明确标记的 HumanEval accepted DAG 导出，不包含 E3。
+
+HumanEval 使用 `prepare --benchmark humaneval`，原始函数说明取代四选项输入；其 g/N/D、图算子与选点规则不变，使用独立协议版本。[HumanEval 操作说明](docs/HUMANEVAL.md)。GPQA 仍为默认 adapter。
 
 **状态：离线测试、真实 118 题预处理及 Qwen2.5-7B 的 B1 八卡 canary 已通过。其他模型尚未验收；配置示例不是已经验证过的五模型运行配置。** 详见 [canary 记录](docs/CANARY-20260918.md)。
 

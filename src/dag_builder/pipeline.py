@@ -454,6 +454,14 @@ class Pipeline:
                     "DAG construction and semantic review use the same model; "
                     "dependencies are not official gold annotations"
                 )
+            if self.config.task_type == "humaneval":
+                dag["construction_protocol"] = self.config.prompt_version
+                dag["solution_source"] = self.config.solution_source
+                dag["limitation"] = (
+                    "model-generated algorithm explanation conditioned on official reference code; "
+                    "same-model semantic review, not official gold CoT; code/tests not executed"
+                )
+                dag["calculation_check"] = {"status": "not_checked", "reason": "no code execution in DAG builder"}
             write_once(item_dir / "dag.json", dag)
             return self._finish(
                 item,

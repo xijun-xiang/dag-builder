@@ -20,7 +20,7 @@ def trajectory(dag, view):
             {"step_id": node["node_id"], "text": rendered, "parents": node["parents"]}
         )
     answer = dag["reference_solution"]["answer"]
-    if source.get("task_type") == "gsm8k":
+    if source.get("task_type") in ("gsm8k", "humaneval"):
         question = source["question"]
     else:
         question = (

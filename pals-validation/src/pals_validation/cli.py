@@ -9,7 +9,7 @@ from .analyze import analyze
 
 def main():
     os.umask(0o077)
-    parser = argparse.ArgumentParser(description="Frozen GPQA PALS E1/E2 validation")
+    parser = argparse.ArgumentParser(description="Frozen GPQA/HumanEval PALS E1/E2 validation")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("prepare")
     p.add_argument("--source", required=True)
@@ -17,6 +17,7 @@ def main():
     p.add_argument("--seed", type=int, default=20260915)
     p.add_argument("--expected-sha256")
     p.add_argument("--parent-probe", action="store_true")
+    p.add_argument("--benchmark", choices=("gpqa", "humaneval"), default="gpqa")
     p = commands.add_parser("init")
     p.add_argument("--prepared", required=True)
     p.add_argument("--config", required=True)
@@ -31,7 +32,7 @@ def main():
     p.add_argument("--output", required=True)
     args = parser.parse_args()
     if args.command == "prepare":
-        result = prepare(args.source, args.output, args.seed, args.parent_probe, args.expected_sha256)
+        result = prepare(args.source, args.output, args.seed, args.parent_probe, args.expected_sha256, args.benchmark)
     elif args.command == "init":
         result = init_run(args.prepared, args.config, args.output, args.experiment, args.shards)
     elif args.command == "worker":

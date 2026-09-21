@@ -1,4 +1,6 @@
 """Versioned prompts and exact visible-step boundary contract."""
+import ast
+import textwrap
 
 SYSTEM = (
     "Continue the supplied reasoning prefix by producing only the next reasoning step. "
@@ -8,8 +10,20 @@ SYSTEM = (
     "If the prefix is insufficient, explain that within the step."
 )
 
+HUMANEVAL_SYSTEM = SYSTEM + (
+    " The question is an original Python function specification. "
+    "Continue the algorithm explanation in natural language, not Python code. "
+    "Do not output a function implementation, code fence or unit tests."
+)
+
+
+def system_prompt(case):
+    return HUMANEVAL_SYSTEM if case.get("task_type") == "humaneval" else SYSTEM
+
 
 def question(case):
+    if case.get("task_type") == "humaneval":
+        return case["question"]  # Preserve function signature, indentation and docstring.
     return case["question"] + "\n\n" + "\n".join(
         f"{letter}. {text}" for letter, text in zip("ABCD", case["choices"]))
 
@@ -18,10 +32,25 @@ def step_prefix(base, statements):
     return base + "".join(f"<step>\n{s}\n</step>\n" for s in statements) + "<step>\n"
 
 
-def parse_step(text):
+def is_code_step(body):
+    """A syntax guard, not a semantic judge; ordinary 'return the result' is prose."""
+    if "```" in body:
+        return True
+    try:
+        tree = ast.parse(textwrap.dedent(body.strip()))
+    except (SyntaxError, ValueError):
+        return False
+    # Bare nouns/numbers can be prose; statements and executable expressions are code.
+    return any(not isinstance(node, ast.Expr) or not isinstance(node.value, (ast.Name, ast.Constant))
+               for node in tree.body)
+
+
+def parse_step(text, task_type=None):
     body, boundary, spill = text.partition("</step>")
     invalid = (not boundary or not body.strip() or
                any(tag in body for tag in ("<step>", "<answer>", "</answer>", "RESULT:", "<think>", "</think>")))
+    if not invalid and task_type == "humaneval" and is_code_step(body):
+        return {"valid": False, "body": None, "spill": spill, "reason": "code_instead_of_algorithm_step"}
     return {"valid": not invalid, "body": None if invalid else body.strip(),
             "spill": spill, "reason": "missing_boundary_empty_or_nested_structure" if invalid else None}
 

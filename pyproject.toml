@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "infix-dag-builder"
 version = "0.1.0"
-description = "Auditable API-only construction of MMLU, GSM8K and GPQA reference reasoning DAGs"
+description = "Auditable API-only construction of MMLU, GSM8K, GPQA and HumanEval reasoning DAGs"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []

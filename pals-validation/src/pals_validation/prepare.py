@@ -8,7 +8,7 @@ VERSION = "gpqa-validation-v1"
 KNOWN_E2_EXCLUSIONS = {"9220d9a8a6f7295fa73b": "historically reviewed incomplete question; no content repair"}
 
 
-def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None):
+def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None, benchmark="gpqa"):
     source, output = Path(source), Path(output)
     source_hash = sha256(source)
     if expected_sha and source_hash != expected_sha:
@@ -16,7 +16,7 @@ def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None
     cases, jobs, inventory, selection = [], [], [], []
     seen = set()
     for record in read_jsonl(source):
-        case = normalize(record)
+        case = normalize(record, benchmark)
         item = case["item_id"]
         if item in seen:
             raise ValueError("Duplicate question ID")
@@ -45,7 +45,8 @@ def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None
                 jobs.append({"kind": "e1", "item_id": item, "variant": label,
                              "target_id": probe["target_id"], "prefix_ids": probe["prefix_ids"],
                              "deleted_id": deleted, "target": by_id[probe["target_id"]]["statement"]})
-        anchor = None if item in KNOWN_E2_EXCLUSIONS else e2_anchor(steps, item, seed)
+        excluded = KNOWN_E2_EXCLUSIONS if benchmark == "gpqa" else {}
+        anchor = None if item in excluded else e2_anchor(steps, item, seed)
         if anchor:
             # Target text, gold answer and edge metadata never enter the generation job.
             jobs.append({"kind": "e2", "item_id": item, "prefix_ids": anchor["prefix_ids"],
@@ -57,16 +58,20 @@ def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None
                           "legal": f["legal"] is not None, "original_break": ob is not None,
                           "forest_break": fb is not None, "fair_pair": bool(f["legal"] and fb),
                           "e2": anchor is not None, "legal_reason": f["reason"],
-                          "e2_reason": None if anchor else KNOWN_E2_EXCLUSIONS.get(item, "no_nonanswer_node_with_parent")})
+                          "e2_reason": None if anchor else excluded.get(item, "no_nonanswer_node_with_parent")})
     for job in jobs:
         job["job_id"] = digest(job)
+    if not cases:
+        raise ValueError("Empty accepted cohort")
     payloads = {"cases.json": cases, "jobs.json": jobs, "selection.json": selection, "inventory.json": inventory}
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     for name, payload in payloads.items():
         save(output / name, payload)
-    manifest = {"protocol": VERSION, "source_sha256": source_hash, "selection_seed": seed,
+    manifest = {"protocol": VERSION if benchmark == "gpqa" else "humaneval-validation-v1",
+                "source_sha256": source_hash, "selection_seed": seed,
                 "parent_probe": parent_probe, "e2_policy": "one_hash_selected_target_ancestor_prefix",
-                "question_choices": "always_included_in_v1", "questions": len(cases),
+                "question_choices": "always_included_in_v1" if benchmark == "gpqa" else "not_applicable_original_code_prompt",
+                "questions": len(cases),
                 "counts": {k: sum(bool(r[k]) for r in inventory)
                            for k in ("legal", "original_break", "forest_break", "fair_pair", "e2")},
                 "files": {name: sha256(output / name) for name in payloads}}
