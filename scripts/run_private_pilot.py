@@ -22,9 +22,10 @@ def pipeline_type(root, config):
 
     if config.task_type == "livecodebench":
         from dag_builder.livecodebench_reference import LiveCodeBenchReferencePipeline
+        from dag_builder.livecodebench_dag import LiveCodeBenchDAGPipeline
         if (root / "recovery_manifest.json").exists():
             raise ValueError("LiveCodeBench cannot consume a HumanEval recovery manifest")
-        return LiveCodeBenchReferencePipeline
+        return LiveCodeBenchDAGPipeline if config.prompt_version == "livecodebench-dag-v1" else LiveCodeBenchReferencePipeline
     if (root / "recovery_manifest.json").exists():
         if config.task_type != "humaneval" or config.prompt_version not in (
             "humaneval-reference-v4", "humaneval-reference-v5"

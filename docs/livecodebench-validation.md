@@ -5,7 +5,7 @@
 
 ## 当前实现范围
 
-已实现严格离线导入、5 题固定选样和单候选参考代码生成；参考代码验证、DAG 构建和 PALS 正式
+已实现严格离线导入、5 题固定选样、单候选参考代码生成、隔离验证器和执行证据约束的构图入口；参考代码验证、DAG 构建和 PALS 正式
 执行各有独立验收门槛，未完成前不得把本页写成“LiveCodeBench 实验通过”。
 旧 GPQA/HumanEval 的图算子、g/M/N/D 与统计方法不变。
 
@@ -56,6 +56,42 @@ PYTHONPATH=src python -m dag_builder.livecodebench_source \
   后续构图最多使用剩余的 140 请求/700 万额度，两阶段合计不超过本次授权。
 - 启动器 `scripts/run_private_pilot.py` 会冻结代码与提示。只生成候选；
   不执行程序、不自动构图，不把一次响应解析成功标为数据质量通过。
+- 五题参考生成已完成：5 次 API 请求，报告总用量 57972 token；4 个完整候选，
+  LeetCode 3781 在 32768 输出 token 处 length 截断，全部用于 thinking，
+  正式 content 不可用。保留原响应，不修补、不换题、不补采样。
+- 四个候选对应 162 个公开/隐藏测试；第五题的 43 个测试没有可执行候选，
+  不把未执行标成通过。实际 CPU 验收状态以 completion 与逐用例记录为准。
+
+### 参考执行与构图入口
+
+`scripts/verify_livecodebench_reference.py --prepare <参考生成目录> --root <执行包目录>`
+只校验输入、绑定代码/测试哈希和准备数据，不执行生成程序。
+真正执行仅在 B1 的 Slurm 作业中调用 `--root`；默认拒绝 seccomp、内存/CPU/
+时间/输出限制、最小环境、每用例新进程，以及正负控制均生效后才运行候选。
+隐藏期望输出不进入候选进程，只在父进程比较结果。
+
+当前质量门槛使用精确 JSON 相等、或逐行空白归一化后的文本相等，不做浮点
+容差放宽。它是保守的参考程序筛选门槛，不冒充官方排行榜的完整评分器；
+未来若需浮点题容差，必须新增明确的比较协议，不能静默改旧结果。
+
+```bash
+PYTHONPATH=src python -m dag_builder.livecodebench_dag \
+  --source /absolute/private/reference-generation \
+  --execution /absolute/private/verified-execution-snapshot \
+  --expected-manifest /absolute/private/pre-submission/input-manifest.json \
+  --root /absolute/private/dag-canary
+```
+
+只有 Slurm 执行完成、隔离正负控制通过、全部计划测试齐全、程序/源题/测试/
+结果哈希与提交前本地 manifest 匹配的候选才被纳入。缺失任一条件立即停止。
+执行入口会区分错误答案、超时、运行错误、设施/隔离错误，不把它们合并成
+一个“模型答错”。构图实际使用 `configs/livecodebench-v6-canary-dag.json`，
+仍是解释→审核→拆步→依赖→论证→DAG审核六阶段，保留 HumanEval v5 的
+代码事实、自包含与不变量质量检查，但使用独立 LCB 提示词及来源标记。
+原 HumanEval 提示词不变，不能把 LCB 的模型程序标成官方 canonical solution。
+
+参考代码、测试及 API 响应始终留在私有产物目录；Git 只发布实现和合成测试。
+LCB 的 PALS 评分适配与全量提交尚未验收，不应直接用 HumanEval benchmark 标签运行。
 
 ### 正式实验预设
 

@@ -47,6 +47,10 @@ class MathQuestion:
 
 
 def public_question(item):
+    if item.get("task_type") == "livecodebench":
+        require(text(item.get("question")), "empty LiveCodeBench question")
+        require(item.get("io_type") in ("functional", "stdin"), "invalid LiveCodeBench I/O type")
+        return {key: item[key] for key in ("task_type", "question", "io_type", "entry_point", "starter_code")}
     if item.get("task_type") == "humaneval":
         require(text(item.get("question")), "empty HumanEval prompt")
         require(text(item.get("entry_point")) and item["entry_point"].isidentifier(), "invalid entry point")

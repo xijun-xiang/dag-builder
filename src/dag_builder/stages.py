@@ -31,7 +31,7 @@ REVISION_STAGES = ("revise", "audit", "adjudicate")
 
 def stages_for(config):
     if config.task_type == "livecodebench":
-        return ("reference_code",)
+        return ("reference_code",) if config.prompt_version == "livecodebench-reference-v1" else STAGES
     if config.prompt_version == "gpqa-revision-v1":
         return REVISION_STAGES
     if config.prompt_version == "gpqa-repair-v1":
@@ -45,7 +45,8 @@ def prompt(
     stage, version="v1", task_type="mmlu", solution_source="independent_generation"
 ):
     if task_type == "livecodebench":
-        if stage != "reference_code" or version != "livecodebench-reference-v1":
+        if not ((version == "livecodebench-reference-v1" and stage == "reference_code")
+                or (version == "livecodebench-dag-v1" and stage in STAGES)):
             raise ValueError("unsupported LiveCodeBench stage or protocol")
         return files("dag_builder").joinpath("prompts", version, stage + ".md").read_text(encoding="utf-8")
     allowed = (
@@ -97,6 +98,10 @@ def prompt(
 
 def reference_solution(item, results):
     """Official references are source data, never a fabricated solve completion."""
+    if item.get("task_type") == "livecodebench":
+        return {"answer": item["reference_code"], "rationale": results["solve"]["rationale"],
+                "origin": "model_explanation_of_test_verified_candidate",
+                "reference_execution": "passed_frozen_tests_not_exhaustive_proof"}
     if item.get("task_type") == "humaneval":
         return {"answer": item["canonical_solution"], "rationale": results["solve"]["rationale"],
                 "origin": "model_explanation_of_official_code", "reference_execution": "not_executed"}
@@ -114,15 +119,16 @@ def reference_solution(item, results):
 
 def stage_input(stage, item, results, solution_source="independent_generation"):
     data = {"question": public_question(item)}
-    if item.get("task_type") == "humaneval":
+    if item.get("task_type") in ("humaneval", "livecodebench"):
         require(stage in STAGES, "unknown HumanEval stage")
         # Tests are intentionally absent; allowlist fields instead of copying source.
-        data["reference_code"] = item["canonical_solution"]
-        data["reference_execution"] = "not_executed"
+        is_lcb = item.get("task_type") == "livecodebench"
+        data["reference_code"] = item["reference_code"] if is_lcb else item["canonical_solution"]
+        data["reference_execution"] = "passed_frozen_tests_not_exhaustive_proof" if is_lcb else "not_executed"
         if stage != "solve":
             data["solution"] = reference_solution(item, results)
         if stage == "atomize":
-            data["reference_sources"] = {"reference_code": item["canonical_solution"]}
+            data["reference_sources"] = {"reference_code": data["reference_code"]}
         if stage in ("dependencies", "justify", "review_dag"):
             data["nodes"] = results["atomize"]["nodes"]
         if stage in ("justify", "review_dag"):
@@ -213,7 +219,7 @@ def validate(stage, value, data, solution_source="independent_generation", *, pr
             "structured answer changed; no repair allowed",
         )
     elif stage == "solve":
-        if data["question"].get("task_type") == "humaneval":
+        if data["question"].get("task_type") in ("humaneval", "livecodebench"):
             validate_code_explanation(value)
         elif solution_source in (
             "answer_conditioned_generation",
@@ -232,10 +238,10 @@ def validate(stage, value, data, solution_source="independent_generation", *, pr
             data["question"]["question"],
             data["solution"]["rationale"],
             extra_sources=data.get("reference_sources"),
-            allow_reference_code_facts=(prompt_version == "humaneval-reference-v5"
-                                        and data["question"].get("task_type") == "humaneval"),
+            allow_reference_code_facts=(prompt_version in ("humaneval-reference-v5", "livecodebench-dag-v1")
+                                        and data["question"].get("task_type") in ("humaneval", "livecodebench")),
         )
-        if data["question"].get("task_type") == "humaneval":
+        if data["question"].get("task_type") in ("humaneval", "livecodebench"):
             require(value["nodes"][-1]["statement"] == data["reference_code"],
                     "terminal answer must preserve reference completion verbatim")
             require(value["nodes"][-1]["source_field"] == "reference_code", "code answer source required")
@@ -250,3 +256,7 @@ def validate(stage, value, data, solution_source="independent_generation", *, pr
     if prompt_version in ("humaneval-reference-v4", "humaneval-reference-v5"):
         from .humaneval_quality import validate_quality
         validate_quality(stage, value, data, version=prompt_version)
+    if prompt_version == "livecodebench-dag-v1":
+        # Reuse exactly the reviewed code-fact/root/positional-reference checks.
+        from .humaneval_quality import validate_quality
+        validate_quality(stage, value, data, version="humaneval-reference-v5")

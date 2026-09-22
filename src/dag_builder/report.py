@@ -25,6 +25,8 @@ def report_title(items, selection):
     if task_types == {"humaneval"}:
         return "HumanEval 参考代码解释与 DAG 审查（未执行代码）"
     if task_types == {"livecodebench"}:
+        if all(item.get("reference_execution") == "passed_frozen_tests_not_exhaustive_proof" for item in items):
+            return "LiveCodeBench v6：测试通过参考程序的解释与 DAG 审查"
         return "LiveCodeBench v6 参考程序候选（需独立执行验收）"
     return "DAG 构造审查"
 
@@ -124,7 +126,8 @@ def render(root):
             blocks.append("<h3>官方参考 completion（未执行）</h3><pre>"
                           + html.escape(item["canonical_solution"]) + "</pre>")
         elif item.get("task_type") == "livecodebench":
-            blocks.append("<p>模型参考程序候选；不是官方 gold，也未自动通过测试。</p>")
+            blocks.append("<p>参考来源：模型生成，非官方 gold；执行状态："
+                          + html.escape(item["reference_execution"]) + "。测试通过不证明 DAG 正确。</p>")
         else:
             blocks.append("<p>数据集答案：" + html.escape(item["gold_answer"]) + "</p>")
         if item.get("task_type") == "gpqa":

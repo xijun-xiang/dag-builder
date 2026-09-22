@@ -68,7 +68,7 @@ class Config:
             "gsm8k": ("gsm8k-v1",),
             "gpqa": ("gpqa-reference-v1", "gpqa-repair-v1", "gpqa-revision-v1"),
             "humaneval": ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"),
-            "livecodebench": ("livecodebench-reference-v1",),
+            "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1"),
         }[self.task_type]
         if self.prompt_version not in versions:
             raise ValueError("prompt version does not match task_type")
@@ -99,9 +99,9 @@ class Config:
             "reference_code_explanation",
         ):
             raise ValueError("unknown solution source")
-        if self.task_type == "humaneval":
+        if self.task_type == "humaneval" or self.prompt_version == "livecodebench-dag-v1":
             if self.solution_source != "reference_code_explanation":
-                raise ValueError("humaneval requires reference_code_explanation")
+                raise ValueError("reference DAG construction requires reference_code_explanation")
         elif self.solution_source == "reference_code_explanation":
             raise ValueError("reference_code_explanation requires humaneval")
         elif (

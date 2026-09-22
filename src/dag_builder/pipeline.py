@@ -343,7 +343,7 @@ class Pipeline:
                 output = parse_native_solution(message)
             else:
                 output = parse_object(message.get("content"))
-                if self.config.prompt_version in ("humaneval-reference-v4", "humaneval-reference-v5") and stage == "atomize":
+                if self.config.prompt_version in ("humaneval-reference-v4", "humaneval-reference-v5", "livecodebench-dag-v1") and stage == "atomize":
                     from .humaneval_quality import normalize_sources
                     original = output
                     output, changes = normalize_sources(output)
@@ -516,6 +516,12 @@ class Pipeline:
                     "same-model semantic review, not official gold CoT; code/tests not executed"
                 )
                 dag["calculation_check"] = {"status": "not_checked", "reason": "no code execution in DAG builder"}
+            if self.config.task_type == "livecodebench":
+                dag["construction_protocol"] = self.config.prompt_version
+                dag["solution_source"] = "test_verified_model_reference_explanation"
+                dag["execution_evidence"] = item["execution_evidence"]
+                dag["limitation"] = "model-generated reference passed frozen tests; same-model DAG review is not official/human gold"
+                dag["calculation_check"] = {"status": "reference_tests_passed", "reason": "external CPU gate; not a proof of the DAG"}
             provenance = self.recovery_provenance(item)
             if provenance is not None:
                 dag["recovery_provenance"] = provenance
