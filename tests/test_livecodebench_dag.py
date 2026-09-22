@@ -123,6 +123,40 @@ class DAGTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify_execution(root, root / "input-manifest.json")
 
+    def test_complete_execution_binding_and_missing_test_rejected(self):
+        from dag_builder.livecodebench_dag import sha256
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            write_bytes_once(root / "verify_livecodebench_reference.py", b"# synthetic, never executed\n")
+            tests = [{"split": split, "index": 0, "inputs": "7", "expected": "7"}
+                     for split in ("public", "private")]
+            row = {"item_id": "a" * 20, "code": "print(input())", "code_sha256": digest("print(input())"),
+                   "tests_sha256": "b" * 64, "source_content_sha256": "c" * 64, "tests": tests}
+            write_once(root / "execution-input.json", [row])
+            manifest = {"protocol": "lcb-reference-seccomp-v1", "planned": 1,
+                        "inputs_sha256": digest([row]), "harness_sha256": sha256(root / "verify_livecodebench_reference.py")}
+            write_once(root / "input-manifest.json", manifest)
+            write_once(root / "harness-selftest.json", [{"status": s} for s in
+                       ("passed", "wrong_answer", "passed", "wrong_answer", "passed")])
+            result = {k: row[k] for k in ("item_id", "code_sha256", "tests_sha256", "source_content_sha256")}
+            result.update(status="passed", tests=[{"status": "passed", "test_sha256": digest(t),
+                          "split": t["split"], "index": t["index"]} for t in tests])
+            result_path = root / "results" / (row["item_id"] + ".json")
+            write_once(result_path, result)
+            completion = {"policy": "lcb-reference-seccomp-v1", "status": "processed", "job_id": "fixture",
+                          "hostname": "fixture", "executed": 1, "passed": 1,
+                          "input_manifest_sha256": sha256(root / "input-manifest.json"),
+                          "results": {result_path.name: sha256(result_path)}}
+            write_once(root / "completion.json", completion)
+            verified, _ = verify_execution(root, root / "input-manifest.json")
+            self.assertEqual(len(verified), 1)
+            result["tests"].pop()
+            result_path.write_text(json.dumps(result))
+            completion["results"][result_path.name] = sha256(result_path)
+            (root / "completion.json").write_text(json.dumps(completion))
+            with self.assertRaisesRegex(ValueError, "missing test results"):
+                verify_execution(root, root / "input-manifest.json")
+
 
 if __name__ == "__main__":
     unittest.main()
