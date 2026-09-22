@@ -48,6 +48,9 @@ PYTHONPATH=src python scripts/run_private_pilot.py \
   --root /absolute/private/calibri-repair3-v1 \
   --config configs/livecodebench-calibri-repair-canary.json \
   --key-file /absolute/private/existing-api-key
+
+PYTHONPATH=src python scripts/audit_calibri_repair.py \
+  --root /absolute/private/calibri-repair3-v1
 ```
 
 程序要求 Python >= 3.10。启动时复制不可变代码和提示快照，结果与源代码版本绑定。
@@ -61,3 +64,22 @@ PYTHONPATH=src python scripts/run_private_pilot.py \
 后续全量仍遵循：冻结候选 → 隔离 CPU 执行 → v2 初次构图 → 对所有合适失败题
 一次回修 → 合并来源不重复的接受集 → 发布前审计。所有175题保留流转分母。
 没有来源的82题不强行生成；93题是来源候选数量，不是已通过数量。
+
+## 2026-09-23 三题验收结果
+
+实现版本 `69d3408`；真实调用9次，308181报告token、832121保守预留token。
+运行完整结束，无全局暂停、API合同违规或超预算。历史累计33请求、2059510预留token。
+结构检查三题均通过，但语义审核仅3709通过：
+
+- 3709：删掉冗余的k=1特例，一般性证明保留，接受。
+- 3759：补回正数前提，但复杂度可行性仍缺显式n上界，拒绝。
+- abc398_c：补回取值和规模约束，但误删了后续打印结论所需的代码输出规则，拒绝。
+
+原通过题abc396_a不重跑，按题号合并累计2/4模型接受，仍非正式发布集。
+三题均有完整前后映射、来源和拒绝记录；拒绝题无dag.json，不循环重试。
+离线重放核验通过，352项构图库测试与63项PALS测试通过；源码和提示均已冻结。
+没有因为图闭合而放过语义缺口，也没有据此宣布“构图质量已保证”。
+
+当前尚有持续性的前提遗漏和删除影响判断问题，未扩量。
+下一版应在提出修改前逐结论核对必要前提，并说明每个删除节点是否承载后续陈述所用事实。
+新版本如需运行，应另记开发轮次，不能覆盖本轮失败或伪装为首轮成功。
