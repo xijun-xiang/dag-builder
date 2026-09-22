@@ -59,3 +59,47 @@ PYTHONPATH=src python scripts/audit_calibri_repair.py \
 正式输出仍 `formal_eligible=false`；通过模型审核不自动发布。
 两题用于判断这次工程改动是否解决已知问题，不能估计未见数据上的总体产出率。
 下一次扩量前需以固定协议处理新候选；不能悄悄重复已接受题或把修复代数漏记。
+
+## 本轮运行与输出预算补审
+
+v2主体：5请求、216635报告token、517986预留token，运行完整结束，离线重放通过。
+3759补齐已知前提，但仍保留未通向答案的边界/复杂度分支，结构拒收。
+abc398_c前提、输出规则前移及依赖路径已通过；最终审核用完32768输出token且
+全部用于reasoning，正式content为空、finish_reason=length，没有语义裁决。
+
+`calibri_review_resume.py` 对后者支持一次固定图补审，输出预算65536，
+最多1请求/20万预留token。与主体合计最多6请求，旧消耗计入总额。
+只有empty content + length符合条件；语义reject或结构失败不通过此入口重试。
+候选图逐字段重建核对后冻结，仅补最终审核；不解析reasoning作为结论、不修复截断JSON。
+补审通过也不是独立验证，`formal_eligible=false`仍保持。
+
+```bash
+PYTHONPATH=src python -m dag_builder.calibri_review_resume \
+  --parent /absolute/private/calibri-repair2-v2 \
+  --root /absolute/private/calibri-repair2-v2-review64k
+
+PYTHONPATH=src python scripts/run_private_pilot.py \
+  --root /absolute/private/calibri-repair2-v2-review64k \
+  --config /absolute/private/calibri-repair2-v2-review64k/config.json \
+  --key-file /absolute/private/existing-api-key
+
+PYTHONPATH=src python -m dag_builder.calibri_review_resume \
+  --root /absolute/private/calibri-repair2-v2-review64k --audit
+```
+
+### 补审验收结果
+
+固定图补审以stop完整结束，正式content返回accept，issues为空；只解析content。
+1请求、54267报告token、157114预留token。主体与补审合计6请求、270902报告token、
+675100预留token；历史累计39请求、2734610预留token，均在600请求/2500万总额内。
+离线重放确认输入图未变，原响应、解析审核、结果与预算对应一致。
+
+四题开发集按题号去重为3接受、1保留失败：abc396_a在normalize-v2接受，
+3709在repair-v1接受，abc398_c在repair-v2固定图补审接受；3759仍结构未闭合。
+两类I/O均有接受实例；该3/4不是未见数据上的首轮成功率。
+不为将3759纳入而补虚假边；该问题可排除，辅助分支表示仍需记录为失败类型。
+接受集仍为同模型审核的候选，非独立人工gold，不自动改变formal_eligible。
+
+最新363项构图库测试、63项PALS测试通过。93份来源候选尚未完成全量CPU复验或构图。
+本v2准备入口绑定旧v1开发历史；将其用于新题首次回修需要单独的生产入口和测试，
+不能把本开发入口直接当作93题完整生产工作流。
