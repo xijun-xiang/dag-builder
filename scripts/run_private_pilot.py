@@ -13,6 +13,26 @@ import sys
 from pathlib import Path
 
 
+def pipeline_type(root, config):
+    """Select the explicit protocol; a prepared recovery must never run fresh."""
+    from dag_builder.humaneval_repair import recovery_pipeline_type
+    from dag_builder.pipeline import Pipeline
+    from dag_builder.repair import RepairPipeline
+    from dag_builder.repair_loop import RevisionPipeline
+
+    if (root / "recovery_manifest.json").exists():
+        if config.task_type != "humaneval" or config.prompt_version not in (
+            "humaneval-reference-v4", "humaneval-reference-v5"
+        ):
+            raise ValueError("recovery manifest requires HumanEval v4 protocol or v5 protocol")
+        return recovery_pipeline_type(root)
+    if config.prompt_version == "gpqa-revision-v1":
+        return RevisionPipeline
+    if config.prompt_version == "gpqa-repair-v1":
+        return RepairPipeline
+    return Pipeline
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -27,9 +47,7 @@ def main():
 
     from dag_builder.client import APIClient, load_key
     from dag_builder.config import Config
-    from dag_builder.pipeline import Pipeline, implementation, now
-    from dag_builder.repair import RepairPipeline
-    from dag_builder.repair_loop import RevisionPipeline
+    from dag_builder.pipeline import implementation, now
     from dag_builder.report import overview, render
     from dag_builder.storage import (
         digest,
@@ -50,6 +68,7 @@ def main():
                     "pilot already launched; inspect before explicitly resuming"
                 )
             config = Config.load(args.config)
+            pipeline_type(root, config)
             load_key(config.key_env, args.key_file)
             items = read_json(root / "items.json")
             assert items and all(
@@ -137,13 +156,7 @@ def main():
                 }
                 write_once(root / "progress" / (digest(snapshot) + ".json"), snapshot)
 
-            pipeline_class = (
-                RevisionPipeline
-                if config.prompt_version == "gpqa-revision-v1"
-                else RepairPipeline
-                if config.prompt_version == "gpqa-repair-v1"
-                else Pipeline
-            )
+            pipeline_class = pipeline_type(root, config)
             result = pipeline_class(root, config, client, resilient=True).run(
                 progress=progress
             )

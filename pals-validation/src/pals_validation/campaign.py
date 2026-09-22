@@ -85,7 +85,26 @@ def reference_check(root):
         errors[label] = abs(loss - scored["score"][label + "_nll"])
     if not all(0 <= e <= .005 for e in errors.values()):
         raise RuntimeError(f"Native masked-loss reference failed: {errors}")
+    budgets = None
+    if config.get("campaign_experiment") == "e2":
+        prepared = root.parent.parent / "prepared"
+        formal_cases = {c["item_id"]: c for c in read(prepared / "cases.json")}
+        budgets = []
+        for j in read(prepared / "jobs.json"):
+            if j["kind"] != "e2":
+                continue
+            context = backend.context(formal_cases[j["item_id"]], j["prefix_ids"], for_generation=True)
+            prompt_tokens = len(backend.tokenizer.encode(context, add_special_tokens=False))
+            required = prompt_tokens + config["max_new_tokens"]
+            if required > config["max_context"]:
+                raise ValueError("Full-cohort E2 context budget overflow: " + j["item_id"])
+            budgets.append({"item_id": j["item_id"], "prompt_tokens": prompt_tokens,
+                            "reserved_new_tokens": config["max_new_tokens"],
+                            "context_headroom": config["max_context"] - required})
+        if not budgets:
+            raise ValueError("Full-cohort E2 budget inventory is empty")
     save(root / "reference.json", {"absolute_nll_errors": errors, "tolerance": .005,
+         "full_cohort_generation_budgets": budgets,
          "versions": backend.versions, "identity": reference_identity(root)})
 
 
@@ -105,9 +124,9 @@ def attempt(root, identity, resume):
     return folder
 
 
-def phases(root, prepared, visible, logs, prefix=""):
+def phases(root, prepared, visible, logs, prefix="", experiments=("e1", "e2")):
     summaries = {}
-    for experiment in ("e1", "e2"):
+    for experiment in experiments:
         run = root / (prefix + experiment)
         init_or_resume(prepared, root / "config.json", run, experiment, len(visible))
         workers(logs, run, experiment, visible)
@@ -115,7 +134,40 @@ def phases(root, prepared, visible, logs, prefix=""):
     return summaries
 
 
-def run_canary(root, visible, resume=False):
+def selected_experiments(config, experiment):
+    if experiment not in ("all", "e1", "e2"):
+        raise ValueError("Unknown campaign experiment")
+    if config.get("campaign_experiment", "all") != experiment:
+        raise ValueError("Campaign experiment differs from frozen configuration")
+    return ("e1", "e2") if experiment == "all" else (experiment,)
+
+
+def canary_coverage(e2, config):
+    """Numerical/record integrity is checked separately; invalid draws stay invalid."""
+    policy = config.get("canary_coverage_policy", "complete")
+    minimum = config.get("canary_min_valid_repeats", 2)
+    cells = e2["cells"]
+    if not cells or any(c["attempted"] != config["repeats"] or c["planned"] != config["repeats"] for c in cells):
+        raise RuntimeError("Canary repeat slots incomplete")
+    report = {"policy": policy, "planned": sum(c["planned"] for c in cells),
+              "valid": sum(c["valid"] for c in cells), "complete_questions": e2["complete_questions"],
+              "planned_questions": e2["planned_questions"], "minimum_valid_repeats_per_cell": minimum}
+    if policy == "complete":
+        if e2["complete_questions"] != e2["planned_questions"]:
+            raise RuntimeError("Canary generation coverage incomplete; no extra sampling")
+    elif policy == "report_invalid":
+        if any(c["valid"] < minimum for c in cells):
+            raise RuntimeError("Canary has too few valid draws to check repeat scoring; no extra sampling")
+    else:
+        raise ValueError("Unknown canary coverage policy")
+    report["invalid"] = report["planned"] - report["valid"]
+    report["coverage_warning"] = report["invalid"] / report["planned"] >= .05
+    return report
+
+
+def run_canary(root, visible, resume=False, experiment="all"):
+    config = read(root / "config.json")
+    experiments = selected_experiments(config, experiment)
     with exclusive_lock(root / "CAMPAIGN.lock"):
         logs = attempt(root, reference_identity(root), resume)
         try:
@@ -134,12 +186,13 @@ def run_canary(root, visible, resume=False):
                         raise RuntimeError("Native masked-loss reference failed")
                 finally:
                     stop_children([(proc, None)])
-            summaries = phases(root, root / "prepared", visible, logs)
-            e2 = summaries["e2"]
-            if e2["complete_questions"] != e2["planned_questions"]:
-                raise RuntimeError("Canary generation coverage incomplete; no extra sampling")
-            result = {"status": "PASS", "e1_jobs": summaries["e1"]["accepted_jobs"],
-                      "e2_jobs": e2["accepted_jobs"], "e2_complete_questions": e2["complete_questions"],
+            summaries = phases(root, root / "prepared", visible, logs, experiments=experiments)
+            coverage = canary_coverage(summaries["e2"], config) if "e2" in summaries else None
+            result = {"status": "PASS", "experiments": list(experiments),
+                      "e1_jobs": summaries.get("e1", {}).get("accepted_jobs"),
+                      "e2_jobs": summaries.get("e2", {}).get("accepted_jobs"),
+                      "e2_complete_questions": summaries.get("e2", {}).get("complete_questions"),
+                      "generation_coverage": coverage,
                       "identity": reference_identity(root), "purpose": "engineering only, no effect gate"}
             if (root / "canary-completion.json").exists():
                 if read(root / "canary-completion.json") != result:
@@ -165,7 +218,8 @@ def lock_probe(root):
     subprocess.run([sys.executable, "-c", code, str(path)], check=True)
 
 
-def run_campaign(root, visible, resume=False):
+def run_campaign(root, visible, resume=False, experiment="all"):
+    experiments = selected_experiments(read(root / "config.json"), experiment)
     identity = {"config": sha256(root / "config.json"), "code": code_hashes(),
                 "prepared": sha256(root.parent / "prepared/manifest.json"),
                 "canary": reference_identity(root / "canary")}
@@ -175,8 +229,8 @@ def run_campaign(root, visible, resume=False):
             lock_probe(logs)
             with (logs / "pip-freeze.txt").open("x") as stream:
                 subprocess.run([sys.executable, "-m", "pip", "freeze"], stdout=stream, check=True)
-            run_canary(root / "canary", visible, resume=resume)
-            summaries = phases(root, root.parent / "prepared", visible, logs, "formal-")
+            run_canary(root / "canary", visible, resume=resume, experiment=experiment)
+            summaries = phases(root, root.parent / "prepared", visible, logs, "formal-", experiments=experiments)
             result = {"status": "artifact_checks_passed_scheduler_pending", "ended": now(),
                       "analysis": str(logs), "results": {k: {"accepted_jobs": v["accepted_jobs"],
                       "protocol_id": v["protocol_id"], "complete_questions": v.get("complete_questions"),
@@ -197,6 +251,7 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--canary-only", action="store_true")
     parser.add_argument("--reference", action="store_true")
+    parser.add_argument("--experiment", choices=("all", "e1", "e2"), default="all")
     args = parser.parse_args()
     os.umask(0o077)
     root = args.root.resolve(strict=True)
@@ -210,7 +265,7 @@ def main():
             visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
             if len(visible) != 8 or len(set(visible)) != 8 or any(not x for x in visible):
                 raise RuntimeError("Exactly eight distinct allocated GPUs required")
-            (run_canary if args.canary_only else run_campaign)(root, visible, args.resume)
+            (run_canary if args.canary_only else run_campaign)(root, visible, args.resume, args.experiment)
 
 
 if __name__ == "__main__":

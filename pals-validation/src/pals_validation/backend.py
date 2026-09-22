@@ -40,10 +40,11 @@ class HFBackend:
         if str(config["device"]).startswith("cuda"):
             self.versions["gpu"] = torch.cuda.get_device_name(config["device"])
 
-    def context(self, case, ids):
+    def context(self, case, ids, *, for_generation=False):
         by_id = {n["node_id"]: n for n in case["steps"]}
+        prompt_version = self.config.get("generation_prompt_version", "v1") if for_generation else "v1"
         base = self.tokenizer.apply_chat_template(
-            [{"role": "system", "content": system_prompt(case)}, {"role": "user", "content": question(case)}],
+            [{"role": "system", "content": system_prompt(case, prompt_version)}, {"role": "user", "content": question(case)}],
             tokenize=False, add_generation_prompt=True, **self.config["chat_template_kwargs"])
         return step_prefix(base, [by_id[i]["statement"] for i in ids])
 
@@ -79,7 +80,7 @@ class HFBackend:
         torch = self.torch
         from transformers import GenerationConfig, StoppingCriteriaList
         tok = self.tokenizer
-        prompt = self.context(case, prefix_ids)
+        prompt = self.context(case, prefix_ids, for_generation=True)
         ids = tok.encode(prompt, add_special_tokens=False)
         if len(ids) + self.config["max_new_tokens"] > self.config["max_context"]:
             raise ValueError("Prompt plus reserved generation budget exceeds max_context")
@@ -114,7 +115,11 @@ class HFBackend:
             rows.append({"repeat": index, "seed": seed, "raw_text": text,
                          "generated_token_ids": tokens, "finish_reason": reason,
                          "parse": parse_step(text, case.get("task_type"))})
-        return {"prompt": prompt, "prompt_token_ids": ids, "rows": rows}
+        return {"prompt": prompt, "prompt_token_ids": ids, "rows": rows,
+                "generation_contract": {"prompt_version": self.config.get("generation_prompt_version", "v1"),
+                    "max_new_tokens": self.config["max_new_tokens"], "max_context": self.config["max_context"],
+                    "prompt_tokens": len(ids), "eos_token_ids": eos_ids, "pad_token_id": pad,
+                    "boundary": "</step>", "constrained_decoding": False}}
 
 
 class MockBackend:

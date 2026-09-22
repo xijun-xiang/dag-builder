@@ -80,6 +80,10 @@ CUDA worker 拒绝在 Slurm allocation 之外运行；运行目录必须在获�
 
 完整 canary → E1/E2 的入口为 `python -m pals_validation.campaign --root <模型运行目录>`；明确续跑时添加 `--resume`，不自动重提任务。输入、配置、源代码、分片数必须与初始化时一致，否则拒绝续跑。初始化先在新暂存目录构建，完整后原子发布；中断的暂存目录保留备查，不作为有效 run。每次启动的日志、环境、验收分析与失败原因都保存在独立 `attempts/` 子目录，不覆盖旧记录。已完成分片重新检查产物哈希，再跳过计算。
 
+从0.1.2起支持独立的 `--experiment e1` 与 `--experiment e2`，必须分别使用新运行目录，并在配置中固定对应的 `campaign_experiment`。E1只做评分canary和正式E1，不调用生成或E2门槛；E2独立做原生loss检查、生成canary与正式E2，不依赖E1完成。旧版不传参数的组合流程保留兼容。
+
+HumanEval 79题重跑设置见 [解耦版协议](docs/HUMANEVAL_V2.md)。`canary_coverage_policy=report_invalid` 不要求所有抽样都符合格式，但每个题目-温度格必须完成全部预定抽样，且至少2条有效以检验重复评分；原始输出、数值算术和分片检查不放宽。默认旧配置仍要求完整生成覆盖。`generation_prompt_version=humaneval-single-step-v2` 只改变生成提示词，不改变计算g时的固定参考提示词；评分温度仍为1。
+
 未落盘的生成批次仍只能重新执行同一个固定 seed，不能声称恢复了那次未保存的抽样。显式续跑是工程恢复，不允许为改善格式覆盖率或实验效果重新抽样。
 
 ```bash

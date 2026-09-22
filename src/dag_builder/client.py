@@ -3,12 +3,14 @@
 import json
 import os
 import stat
+import ssl
+import subprocess
 import threading
 import time
 from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 
 class CallFailure(RuntimeError):
@@ -59,6 +61,11 @@ class APIClient:
         self._key = key
         self._start_lock = threading.Lock()
         self._last_start = 0.0
+        self._stop_event = None
+
+    def bind_stop_event(self, event):
+        """Bind a campaign's stop signal; in-flight requests cannot be recalled."""
+        self._stop_event = event
 
     def redact(self, value):
         if isinstance(value, str):
@@ -71,8 +78,14 @@ class APIClient:
 
     def _request(self, endpoint, payload=None):
         with self._start_lock:
-            time.sleep(max(0, 1.0 - (time.monotonic() - self._last_start)))
+            delay = max(0, 1.0 - (time.monotonic() - self._last_start))
+            if self._stop_event is None:
+                time.sleep(delay)
+            elif self._stop_event.wait(delay):
+                raise CallFailure("paused")
             self._last_start = time.monotonic()
+        if self.config.transport == "curl":
+            return self._curl_request(endpoint, payload)
         request = Request(
             self.config.base_url.rstrip("/") + "/" + endpoint,
             data=None if payload is None else json.dumps(payload).encode(),
@@ -82,8 +95,16 @@ class APIClient:
                 "User-Agent": "infix-dag-builder/0.1",
             },
         )
+        handlers = [NoRedirect()]
+        if self.config.tls_max_version == "TLSv1.2":
+            # Explicit per-run compatibility setting, never disable verification.
+            context = ssl.create_default_context()
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.maximum_version = ssl.TLSVersion.TLSv1_2
+            context.set_alpn_protocols(["http/1.1"])
+            handlers.append(HTTPSHandler(context=context))
         try:
-            with build_opener(NoRedirect()).open(
+            with build_opener(*handlers).open(
                 request, timeout=self.config.timeout_seconds
             ) as response:
                 raw = response.read(16_000_001)
@@ -116,6 +137,52 @@ class APIClient:
                 "_transport_error": "invalid_http_json",
                 "_raw_text": self.redact(raw.decode("utf-8", errors="replace")),
             }
+        if not isinstance(response, dict):
+            raise CallFailure("invalid_http_json")
+        return self.redact(response)
+
+    def _curl_request(self, endpoint, payload):
+        """Optional native HTTPS transport; secrets only on stdin, never argv.
+
+        Disable curlrc, redirects, retries and insecure TLS options. Keep the same
+        response parser/contract downstream; transport changes no model controls.
+        """
+        settings = [
+            "url = " + json.dumps(self.config.base_url.rstrip("/") + "/" + endpoint),
+            "header = " + json.dumps("Authorization: Bearer " + self._key),
+            'header = "Content-Type: application/json"',
+            'user-agent = "infix-dag-builder/0.1"',
+        ]
+        if payload is not None:
+            settings.append("data-binary = " + json.dumps(json.dumps(payload)))
+        command = ["/usr/bin/curl", "--disable", "--silent", "--show-error", "--proto", "=https",
+                   "--max-redirs", "0", "--connect-timeout", "30", "--max-time", str(self.config.timeout_seconds),
+                   "--max-filesize", "16000000", "--write-out", "\n%{http_code}", "--config", "-"]
+        if self.config.tls_max_version == "TLSv1.2":
+            command.extend(["--tlsv1.2", "--tls-max", "1.2"])
+        try:
+            process = subprocess.run(command, input="\n".join(settings).encode(), capture_output=True,
+                                     timeout=self.config.timeout_seconds + 10, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise CallFailure("uncertain_remote_state", transport_kind=type(error).__name__) from None
+        if process.returncode:
+            category = "response_too_large" if process.returncode == 63 else "uncertain_remote_state"
+            raise CallFailure(category, transport_kind="curl_exit_" + str(process.returncode))
+        raw, _, code = process.stdout.rpartition(b"\n")
+        if len(raw) > 16_000_000:
+            raise CallFailure("response_too_large")
+        if len(code) != 3 or not code.isdigit():
+            raise CallFailure("uncertain_remote_state", transport_kind="invalid_curl_status")
+        status = int(code)
+        if not 200 <= status < 300:
+            category = ("authentication" if status in (401, 403) else "rate_limit" if status == 429
+                        else "uncertain_remote_state" if status >= 500 or status == 408 else "http_error")
+            raise CallFailure(category, status)
+        try:
+            response = json.loads(raw)
+        except (ValueError, UnicodeError):
+            return {"_transport_error": "invalid_http_json",
+                    "_raw_text": self.redact(raw.decode("utf-8", errors="replace"))}
         if not isinstance(response, dict):
             raise CallFailure("invalid_http_json")
         return self.redact(response)

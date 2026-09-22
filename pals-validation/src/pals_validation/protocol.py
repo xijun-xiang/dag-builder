@@ -16,8 +16,22 @@ HUMANEVAL_SYSTEM = SYSTEM + (
     "Do not output a function implementation, code fence or unit tests."
 )
 
+HUMANEVAL_GENERATION_V2 = HUMANEVAL_SYSTEM + (
+    " Complete exactly ONE next reasoning step, not the remaining solution. "
+    "Normally one to four sentences are enough; finish the thought before stopping. "
+    "The opening <step> has already been supplied: do not emit another opening tag. "
+    "End your text with the exact seven characters </step>, including the final >. "
+    "Do not use [/step>, do not leave </step unfinished, and output nothing after </step>."
+)
 
-def system_prompt(case):
+
+def system_prompt(case, generation_prompt_version="v1"):
+    if generation_prompt_version not in ("v1", "humaneval-single-step-v2"):
+        raise ValueError("Unknown generation prompt version")
+    if generation_prompt_version == "humaneval-single-step-v2":
+        if case.get("task_type") != "humaneval":
+            raise ValueError("HumanEval generation prompt used for another benchmark")
+        return HUMANEVAL_GENERATION_V2
     return HUMANEVAL_SYSTEM if case.get("task_type") == "humaneval" else SYSTEM
 
 

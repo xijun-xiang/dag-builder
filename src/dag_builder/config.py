@@ -25,6 +25,9 @@ class Config:
     reasoning_effort: str | None = None
     solution_source: str = "independent_generation"
     strict_response_contract: bool = False
+    tls_max_version: str | None = None
+    transport: str = "urllib"
+    content_gated_response: bool = False
 
     def __post_init__(self):
         url = urlparse(self.base_url)
@@ -53,7 +56,7 @@ class Config:
             or not 0 <= self.rate_limit_retries <= 2
         ):
             raise ValueError("rate_limit_retries must be 0..2")
-        worker_limit = 32 if self.task_type == "gpqa" else 6
+        worker_limit = 32 if self.task_type in ("gpqa", "humaneval") else 6
         if self.workers > worker_limit:
             raise ValueError(
                 f"at most {worker_limit} workers are supported for this task"
@@ -64,7 +67,7 @@ class Config:
             "mmlu": ("v1", "mmlu-thinking-v1"),
             "gsm8k": ("gsm8k-v1",),
             "gpqa": ("gpqa-reference-v1", "gpqa-repair-v1", "gpqa-revision-v1"),
-            "humaneval": ("humaneval-reference-v1",),
+            "humaneval": ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"),
         }[self.task_type]
         if self.prompt_version not in versions:
             raise ValueError("prompt version does not match task_type")
@@ -72,6 +75,12 @@ class Config:
             raise ValueError("unsupported thinking mode")
         if type(self.strict_response_contract) is not bool:
             raise ValueError("strict_response_contract must be boolean")
+        if type(self.content_gated_response) is not bool:
+            raise ValueError("content_gated_response must be boolean")
+        if self.tls_max_version not in (None, "TLSv1.2"):
+            raise ValueError("unsupported TLS compatibility setting")
+        if self.transport not in ("urllib", "curl"):
+            raise ValueError("unsupported HTTPS transport")
         if self.reasoning_effort not in (None, "none", "low", "high", "max"):
             raise ValueError("unsupported reasoning effort")
         if self.reasoning_effort == "none" and self.thinking != "disabled":
@@ -113,6 +122,12 @@ class Config:
             value.pop("solution_source")
         if not self.strict_response_contract:
             value.pop("strict_response_contract")
+        if self.tls_max_version is None:
+            value.pop("tls_max_version")
+        if self.transport == "urllib":
+            value.pop("transport")
+        if not self.content_gated_response:
+            value.pop("content_gated_response")
         return value
 
     @classmethod

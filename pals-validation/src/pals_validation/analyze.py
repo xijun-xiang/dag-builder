@@ -1,6 +1,6 @@
 """Strict offline acceptance, paired common-target tables, question bootstrap."""
 import csv
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from .io import read, save, sha256
 from .metrics import bootstrap, pair, repeats, trajectory
@@ -79,8 +79,19 @@ def e2_analysis(results, config):
     if len(temperatures) > 2:
         contrasts[f"{temperatures[-1]}-{temperatures[0]}"] = bootstrap(
             [groups[q][temperatures[-1]]["D"] - groups[q][temperatures[0]]["D"] for q in complete])
+    coverage = {}
+    for t in temperatures:
+        rows = [row for result in results if result["job"]["temperature"] == t for row in result["rows"]]
+        invalid = [row for row in rows if row["status"] != "ok"]
+        reasons = Counter(str(row.get("finish_reason")) + ":" + str(row.get("parse", {}).get("reason"))
+                          for row in invalid)
+        coverage[str(t)] = {"planned": sum(c["planned"] for c in cells if c["temperature"] == t),
+                           "attempted": len(rows), "valid": len(rows) - len(invalid), "invalid": len(invalid),
+                           "invalid_reasons": dict(reasons),
+                           "coverage_warning": len(invalid) / len(rows) >= .05 if rows else True}
     return {"cells": cells, "complete_question_ids": complete, "complete_questions": len(complete),
             "planned_questions": len(groups), "main_complete_cohort": main, "D_contrasts": contrasts,
+            "generation_coverage_by_temperature": coverage,
             "note": "Cells include failures; primary cohort requires all planned repeats at every temperature."}
 
 
@@ -120,6 +131,18 @@ def analyze(run, output):
                 raise ValueError("Generation identity mismatch")
             if len(generation["rows"]) != len(r["rows"]):
                 raise ValueError("Generation/scoring repeat mismatch")
+            if config.get("generation_prompt_version") == "humaneval-single-step-v2" and protocol["scientific_evidence"]:
+                contract = generation["generation_contract"]
+                expected_contract = {"prompt_version": config["generation_prompt_version"],
+                    "max_new_tokens": config["max_new_tokens"], "max_context": config["max_context"],
+                    "prompt_tokens": len(generation["prompt_token_ids"]), "boundary": "</step>",
+                    "constrained_decoding": False}
+                if any(contract.get(k) != v for k, v in expected_contract.items()):
+                    raise ValueError("Generation budget/prompt contract mismatch")
+                if contract["prompt_tokens"] + contract["max_new_tokens"] > contract["max_context"]:
+                    raise ValueError("Generation context budget overflow")
+                if any(len(row["generated_token_ids"]) > config["max_new_tokens"] for row in generation["rows"]):
+                    raise ValueError("Generation exceeded frozen budget")
             for raw, row in zip(generation["rows"], r["rows"]):
                 if any(row.get(key) != value for key, value in raw.items()):
                     raise ValueError("Generation was changed during scoring")

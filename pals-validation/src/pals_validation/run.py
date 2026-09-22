@@ -38,6 +38,15 @@ def validate_config(config):
         raise ValueError("Explicit chat_template_kwargs required")
     if config["backend"] == "hf" and (not config["model_revision"] or "REPLACE" in config["model_revision"]):
         raise ValueError("Pin the actual model revision before initialization")
+    if config.get("generation_prompt_version", "v1") not in ("v1", "humaneval-single-step-v2"):
+        raise ValueError("Unknown generation prompt version")
+    if config.get("campaign_experiment", "all") not in ("e1", "e2", "all"):
+        raise ValueError("Invalid campaign experiment")
+    if config.get("canary_coverage_policy", "complete") not in ("complete", "report_invalid"):
+        raise ValueError("Unknown canary coverage policy")
+    minimum = config.get("canary_min_valid_repeats", 2)
+    if type(minimum) is not int or not 2 <= minimum <= config["repeats"]:
+        raise ValueError("Canary minimum must allow a sample standard deviation")
 
 
 def init_run(prepared, config_path, output, experiment, shards):

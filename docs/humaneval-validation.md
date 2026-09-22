@@ -1,6 +1,35 @@
 # HumanEval：参考代码 → 推理 DAG → PALS E1/E2
 
-状态（2026-09-21）：完成本地代码、官方 164 题静态导入及合成端到端测试；已启动前 5 题真实构图，但因 API 控制不合规暂停，尚无完整通过的 DAG，也未通过 HumanEval 真实 GPU canary。不是正式 PALS 结果。详见 [API 契约修复与验收](api-response-contract.md)。此模块不执行 Python 解答或测试，不包含 pass@k 评测和 E3。
+最新质量改进与回捞入口见 [HumanEval v4 回捞说明](humaneval-recovery.md)。下文保留 v1–v3 的构建与历史验收背景；新协议不覆盖旧实验，真实数据是否可进入正式评分须以独立验收记录为准。
+
+构图协议 `humaneval-reference-v3` 修正HumanEval专属的前提分类：参考程序是
+已给定对象，准确的初始化/更新/返回行为观察可以是given；“算法正确”或
+“不变量成立”不是代码观察，仍须推导。循环证明按基例、条件保持引理、
+归纳结论、返回性质排列，不把待证不变量当根。末尾代码是对应参考答案的
+附件（不参与PALS），不是声称题意唯一推出那一段代码。结构门槛、语义
+审核、引用校验均不放宽；v1/v2的失败产物不改写。通过
+`--prompt-version humaneval-reference-v3` 在新目录使用，不能原地改旧run。
+
+2026-09-21 后续授权：长输出探针保持失败，但不再作为所有构图的总阻塞。
+用户允许采用逐响应内容验收、`32768/high` 和至多32 workers。
+`prepare_humaneval_campaign.py --allow-failed-cap-probe` 只接受已有短JSON通过、
+长上限失败的已记录配置，不把失败改成通过。扩大总预算须显式传入
+`--total-call-budget` / `--total-token-budget`，旧调用继续计入总账。
+
+`content_gated_response=true` 时，输出上限与报告值不符但总量未超过已预留
+额度只记告警；报告总量超过预留仍停止新增请求，包括在客户端限流器里
+等待、尚未发出的请求。已在途请求收回并记录，不能保证服务端即时取消。
+每个响应都保存 `contract_check-v2.json`。非stop、非法JSON一律拒绝，
+不修补截断；GPQA/HumanEval只解析content，原生CoT严格分开字段且拒绝
+两个字段完全相同，不做相互兜底。模型拒绝/格式失败不重新采样直到通过。
+
+离线质量审查可在 `quality_exclusions.json` 记录只拒绝、不提升的裁定，
+必须绑定任务ID与对应solve输出哈希。导出器保留原模型决策，并从候选输出
+中剔除审查拒绝项，记录审查与导出实现哈希。构建运行使用冻结快照；最终
+导出用当前带质量审查检查的仓库版本，不用旧构建快照中的历史导出器。
+语义验收不能由JSON合法或同模型自审替代；输出仍称模型审核候选。
+
+状态（2026-09-21后续更新）：逐响应政策下，首轮固定五题最终0题通过；针对程序事实与循环证明分类修正提示后，同五题复验1题model_accepted、4题拒绝或needs_review。已逐步阅读通过题，并决定按同一冻结协议处理剩余158个候选，workers=32。低产出率和失败样本保留，不声称数据已全量合格。尚未通过HumanEval真实GPU canary，也不是正式PALS结果。历史接口问题见[API契约修复与验收](api-response-contract.md)。此模块不执行Python解答或测试，不包含pass@k评测和E3。
 
 ## 测量对象与不变项
 
@@ -53,7 +82,7 @@ dag-builder prepare-humaneval \
 
 ## 2. 构图（需要另行批准模型调用与预算）
 
-旧模板 `configs/humaneval-reference.json` 保留供历史追溯；新候选 `configs/humaneval-reference-contract-v2.json` 增加严格 API 检查，须先通过 `probe-contract` 再用于新 run。当前代理尚未通过，不要直接照下列构图命令放量。并发上限为 6；客户端请求/预留预算不能代替服务端费用硬限额。
+旧模板 `configs/humaneval-reference.json` 和 `configs/humaneval-reference-contract-v2.json` 保留供历史追溯。长输出探针失败不能自动放量；只有取得明确授权后才可采用上文记录的逐响应内容门槛例外。HumanEval 当前并发上限为 32；客户端请求/预留预算不能代替服务端费用硬限额。
 
 ```bash
 dag-builder run --root /absolute/private/path/humaneval-dag-v1 \
@@ -115,3 +144,30 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=pals-validation/src python -m unittest disc
 在 B1 所有写入仍限于 `/work/projects/polyullm/xxj/PALS/`：代码 `src/`、输入与构图产物 `artifacts/humaneval/`、配置 `configs/`、实验 `runs/`。所有原题、代码答案、模型输出均不进入 Git；仓库只含合成测试。构图预算、密钥和集群启动需单独批准。
 
 本模块只用 `ast.parse` 验证语法，没有 `exec` 或运行测试。将来做代码正确性评测必须单独实现安全执行环境；普通 Slurm 分配、Python 超时或 HumanEval 的 reliability_guard 都不能替代隔离沙箱。
+# Reference construction v2 (thinking enabled)
+
+`humaneval-reference-v2` keeps the same six-stage schema and separates native
+`reasoning_content` from the final JSON in `message.content`. Only the reviewed
+final rationale becomes the trajectory; thinking is archived in raw responses.
+V1 prompts and outputs are not overwritten. V2 requires premises before derived
+conclusions before atomization; downstream stages cannot silently rewrite or
+reorder the frozen explanation. Loops are explained by finite invariant reasoning,
+not by creating a cyclic dependency graph. No minimum step count or branching is
+manufactured. The original canonical code stays the exact terminal answer.
+
+`prepare-humaneval --exclusions exclusions.json` accepts a pre-construction list
+of `{task_id, reason, evidence}` source-quality decisions. The importer preserves
+all 164 source records and their denominator, excludes these IDs from selection,
+and records them in the export manifest. `--count 164` selects all eligible tasks.
+Review rejection is retained without score-based replacement or repeated semantic
+sampling. Model-reviewed explanations are **not official or human-certified gold**;
+reference code and tests have only been syntax-checked, never executed by this tool.
+
+Explicit thinking uses `thinking.type=enabled` and omits temperature (the official
+thinking API ignores it). `reasoning_effort=low` is an optional fixed setting, not
+a determinism guarantee. Requested and returned model aliases are recorded; a
+private proxy alias alone does not establish an immutable upstream model revision.
+Strict usage/model/output-cap checks remain enabled. Compatibility probes accept
+thinking but are bounded to two requests with at most 4096 output tokens each.
+Unknown transport attempts retain their full allowance in the budget; changing
+run directories never authorizes resetting the campaign-wide accounting.

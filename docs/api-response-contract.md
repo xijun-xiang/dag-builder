@@ -1,5 +1,22 @@
 # API 参数与用量契约
 
+## 当前授权政策
+
+2026-09-21后续：用户允许thinking enabled/high、32768、32 workers和更大活动预算，并授权长输出探针失败后采用逐响应验收。探针失败原样保留；此授权不证明代理的参数控制已恢复。新配置显式使用`content_gated_response=true`：仅completion超请求max但总量未超原预留时记告警，总量超预留仍停止新增；非stop与不合法JSON拒绝，不修补或使用reasoning兜底。严格usage/模型标识校验不变。排队尚未发送的请求也服从停止信号；在途请求不能追回。详见[HumanEval当前执行规则](humaneval-validation.md)。
+
+短构图请求已实际通过，HumanEval五题复验有1题通过完整模型审核，随后启动全量候选构建。不能将API正常响应等同于DAG语义正确。以下为默认严格策略与历史探针记录；历史“暂停/未放量”仅指当时状态。
+
+## 历史探针与默认严格策略
+
+早期验收（2026-09-21）：用户允许 thinking 后，enabled/low 的短 JSON 可以正确解析。但完整上限探针请求4096输出tokens，代理报告completion_tokens=31391、total_tokens=31480、finish_reason=stop，仍未通过。当时科学构建没有放量，不能把开启 thinking 当作额度控制问题已解决。
+
+探针现在同时支持显式 enabled/disabled：enabled 为每次至多请求4096输出tokens，disabled 保留原64；均最多两请求，配置中更小的预算优先。下文原64-token验收是历史非思考协议。
+
+若需验证用户指定的真实配置上限，可显式增加 `--configured-max-tokens`。
+该模式不缩小 `max_tokens`（最大支持32768），也不改 `reasoning_effort`；两条请求分别检查短JSON和长输出截断。长输出压力输入为0到19999的整数数组，截断响应只用于接口检查，不进入科学数据。仍最多两请求、无自动重试，预算上限取配置额度与 `2 * max_tokens + 32768` 的较小者；跨run总授权不变。`probe_policy.json` 固定实际采用的上限，原请求保留每个字段，不能将小上限探针冒充正式配置测试。
+
+可选 `transport=curl` 用原生HTTPS客户端排查urllib的SSL中断，默认仍为urllib。凭据仅经stdin；禁用curlrc、自动重试和跳转，保留证书验证。可选 `tls_max_version=TLSv1.2` 是逐run记录的兼容性设置，不改变系统网络；本次单用TLS1.2未解决中断。所有客户端使用同一响应契约检查。
+
 这个检查属于工程门槛，不是 DAG 语义质量或 PALS 有效性实验。
 
 ## 故障与修复

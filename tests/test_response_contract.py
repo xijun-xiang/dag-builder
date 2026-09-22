@@ -6,6 +6,7 @@ import test_builder
 from pathlib import Path
 from unittest.mock import patch
 import json
+import ssl
 
 from dag_builder.client import APIClient, CallFailure
 from dag_builder.config import Config
@@ -27,6 +28,21 @@ def response():
 
 
 class ResponseContractTests(unittest.TestCase):
+    def test_tls_compatibility_does_not_disable_verification(self):
+        self.assertNotIn("tls_max_version", Config().to_dict())
+        with self.assertRaises(ValueError):
+            Config(tls_max_version="TLSv1.0")
+        config = Config(tls_max_version="TLSv1.2")
+        client = APIClient(config, "synthetic-test-secret")
+        with patch("dag_builder.client.build_opener") as opener, patch("dag_builder.client.HTTPSHandler") as handler:
+            opener.return_value.open.return_value.__enter__.return_value.read.return_value = json.dumps(response()).encode()
+            client.complete(payload("solve", {}, config))
+        context = handler.call_args.kwargs["context"]
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+        self.assertEqual(context.maximum_version, ssl.TLSVersion.TLSv1_2)
+
     def test_transport_does_not_drop_control_fields(self):
         config = Config(thinking="disabled", reasoning_effort="none")
         p = payload("solve", {}, config)
@@ -133,6 +149,69 @@ class PipelineContractTests(unittest.TestCase):
 
 
 class ProbeTests(unittest.TestCase):
+    def test_exact_configured_cap_and_high_are_not_silently_reduced(self):
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def complete(self, p):
+                self.calls.append(p)
+                r = response()
+                r["model"] = p["model"]
+                if "19999" in p["messages"][0]["content"]:
+                    r["choices"][0]["finish_reason"] = "length"
+                    r["usage"] = {"prompt_tokens": 100, "completion_tokens": 32768, "total_tokens": 32868}
+                return r
+
+        with tempfile.TemporaryDirectory() as path:
+            client = Client()
+            config = Config(thinking="enabled", reasoning_effort="high", max_tokens=32768,
+                            max_calls=2, max_reserved_tokens=100000, response_format="json_object")
+            result = probe_contract(Path(path).resolve(), config, client, configured_max_tokens=True)
+            self.assertTrue(result["passed"])
+            self.assertEqual(result["actual_request_max_tokens"], 32768)
+            self.assertEqual(len(client.calls), 2)
+            self.assertGreater(result["reserved_tokens"], 65536)
+            for p in client.calls:
+                self.assertEqual(p["max_tokens"], 32768)
+                self.assertEqual(p["reasoning_effort"], "high")
+                self.assertEqual(p["response_format"], {"type": "json_object"})
+                self.assertEqual(p["thinking"], {"type": "enabled"})
+                self.assertNotIn("temperature", p)
+
+    def test_exact_cap_still_honors_smaller_total_budget(self):
+        with tempfile.TemporaryDirectory() as path:
+            client = FakeClient()
+            config = Config(thinking="enabled", reasoning_effort="high", max_tokens=32768, max_reserved_tokens=1000)
+            result = probe_contract(Path(path).resolve(), config, client, configured_max_tokens=True)
+            self.assertEqual(result["attempt_count"], 0)
+            self.assertFalse(result["passed"])
+            self.assertEqual(result["results"][0]["reason"], "budget_exhausted")
+
+    def test_enabled_thinking_probe_keeps_reasoning_separate_and_bounded(self):
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def complete(self, p):
+                self.calls.append(p)
+                r = response()
+                r["model"] = p["model"]
+                r["choices"][0]["message"]["reasoning_content"] = "Private reasoning; not formal JSON."
+                if "9999" in p["messages"][0]["content"]:
+                    r["choices"][0]["finish_reason"] = "length"
+                return r
+
+        with tempfile.TemporaryDirectory() as path:
+            client = Client()
+            config = Config(thinking="enabled", reasoning_effort="low", max_tokens=32768)
+            self.assertTrue(probe_contract(Path(path).resolve(), config, client)["passed"])
+            self.assertEqual(len(client.calls), 2)
+            for p in client.calls:
+                self.assertEqual(p["max_tokens"], 4096)
+                self.assertNotIn("temperature", p)
+                self.assertEqual(p["thinking"], {"type": "enabled"})
+
     def test_probe_preserves_smaller_call_and_output_budgets(self):
         class Client:
             calls = 0

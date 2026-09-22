@@ -65,7 +65,7 @@ def prompt(
         "gpqa-revision-v1",
     ):
         raise ValueError("gpqa requires the official-reference protocol")
-    if task_type == "humaneval" and version != "humaneval-reference-v1":
+    if task_type == "humaneval" and version not in ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"):
         raise ValueError("humaneval requires the reference-code protocol")
     if task_type not in ("mmlu", "gsm8k", "gpqa", "humaneval"):
         raise ValueError("unknown task type")
@@ -77,6 +77,9 @@ def prompt(
         else stage + ".md"
     )
     location = files("dag_builder").joinpath("prompts", version, filename)
+    # v5 changes only atomization and DAG review. Shared v4 prompts stay frozen.
+    if version == "humaneval-reference-v5" and stage not in ("atomize", "review_dag"):
+        location = files("dag_builder").joinpath("prompts", "humaneval-reference-v4", filename)
     if version == "gpqa-repair-v1" and stage == "justify":
         location = files("dag_builder").joinpath(
             "prompts", "gpqa-reference-v1", "justify.md"
@@ -196,7 +199,7 @@ def payload(stage, data, config):
     return request
 
 
-def validate(stage, value, data, solution_source="independent_generation"):
+def validate(stage, value, data, solution_source="independent_generation", *, prompt_version=None):
     if stage == "structure_solution":
         validate_solution(value)
         require(
@@ -223,6 +226,8 @@ def validate(stage, value, data, solution_source="independent_generation"):
             data["question"]["question"],
             data["solution"]["rationale"],
             extra_sources=data.get("reference_sources"),
+            allow_reference_code_facts=(prompt_version == "humaneval-reference-v5"
+                                        and data["question"].get("task_type") == "humaneval"),
         )
         if data["question"].get("task_type") == "humaneval":
             require(value["nodes"][-1]["statement"] == data["reference_code"],
@@ -236,3 +241,6 @@ def validate(stage, value, data, solution_source="independent_generation"):
         validate_justifications(value, data["nodes"])
     else:
         raise ValueError("unknown stage")
+    if prompt_version in ("humaneval-reference-v4", "humaneval-reference-v5"):
+        from .humaneval_quality import validate_quality
+        validate_quality(stage, value, data, version=prompt_version)

@@ -98,6 +98,8 @@ class Pipeline:
         ):
             raise ValueError("repair protocol requires RepairPipeline")
         self.root = private_dir(root)
+        if type(self) is Pipeline and (self.root / "recovery_manifest.json").exists():
+            raise ValueError("recovery cohort requires HumanEvalRecoveryPipeline")
         self.config, self.client = config, client
         self.retry_safe_failures = retry_safe_failures
         self.isolate_uncertain_failures = isolate_uncertain_failures
@@ -109,6 +111,10 @@ class Pipeline:
         self._new_uncertain_failures = 0
         self._budget_lock = threading.Lock()
         self._stop = threading.Event()
+        # Also cancel not-yet-sent calls waiting in the shared client's limiter.
+        bind_stop = getattr(client, "bind_stop_event", None)
+        if callable(bind_stop):
+            bind_stop(self._stop)
         self.calls = 0
         self.reserved_tokens = 0
         self.accounted_tokens = 0
@@ -142,6 +148,7 @@ class Pipeline:
         check = check_response(
             request["payload"], response, request["reserved_tokens"],
             strict=self.config.strict_response_contract,
+            content_gated=self.config.content_gated_response,
         )
         with self._budget_lock:
             if attempt not in self._accounted_responses:
@@ -152,8 +159,10 @@ class Pipeline:
             if check["violations"]:
                 self._contract_violations.add(str(attempt.relative_to(self.root)))
                 self._stop.set()
+        if check["violations"] or self.config.content_gated_response:
+            filename = "contract_check-v2.json" if self.config.content_gated_response else "contract_check-v1.json"
+            write_once(attempt / filename, check)
         if check["violations"]:
-            write_once(attempt / "contract_check-v1.json", check)
             if raise_failure:
                 raise CallFailure("response_contract_violation")
         return response
@@ -220,6 +229,7 @@ class Pipeline:
                         "ended_at": now(),
                         "category": error.category,
                         "http_status": error.status,
+                        "transport_kind": error.transport_kind,
                     },
                 )
                 if (
@@ -303,7 +313,8 @@ class Pipeline:
             item,
             data,
             request_payload,
-            lambda output: validate(stage, output, data, self.config.solution_source),
+            lambda output: validate(stage, output, data, self.config.solution_source,
+                                    prompt_version=self.config.prompt_version),
             native=stage == "solve"
             and self.config.prompt_version == "mmlu-thinking-v1",
         )
@@ -325,10 +336,19 @@ class Pipeline:
                     "missing, ambiguous or non-stop completion; no truncated text is accepted"
                 )
             message = choices[0].get("message", {})
+            require(isinstance(message, dict), "invalid assistant message")
             if native:
                 output = parse_native_solution(message)
             else:
                 output = parse_object(message.get("content"))
+                if self.config.prompt_version in ("humaneval-reference-v4", "humaneval-reference-v5") and stage == "atomize":
+                    from .humaneval_quality import normalize_sources
+                    original = output
+                    output, changes = normalize_sources(output)
+                    write_once(directory / "normalization.json", {
+                        "policy": "humaneval-source-aliases-v1", "changes": changes,
+                        "raw_parsed_sha256": digest(original), "normalized_sha256": digest(output),
+                    })
                 validator(output)
             if stage == "solve" and self.config.solution_source in (
                 "answer_conditioned_generation",
@@ -494,6 +514,9 @@ class Pipeline:
                     "same-model semantic review, not official gold CoT; code/tests not executed"
                 )
                 dag["calculation_check"] = {"status": "not_checked", "reason": "no code execution in DAG builder"}
+            provenance = self.recovery_provenance(item)
+            if provenance is not None:
+                dag["recovery_provenance"] = provenance
             write_once(item_dir / "dag.json", dag)
             return self._finish(
                 item,
@@ -520,6 +543,9 @@ class Pipeline:
                 "stage": current,
                 "reason": error.category,
             }
+
+    def recovery_provenance(self, item):
+        return None
 
     def _finish(self, item, status, stage, reason, dag_sha256=None):
         result = {

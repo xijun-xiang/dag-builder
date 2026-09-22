@@ -46,7 +46,8 @@ def normalize_humaneval(rows, revision):
     return items
 
 
-def prepare_humaneval(root, source_file, revision, expected_sha256, count=164, seed=20260921):
+def prepare_humaneval(root, source_file, revision, expected_sha256, count=164, seed=20260921,
+                     exclusions=None):
     """Require the full 164-task source even when selecting a small canary."""
     path = Path(source_file)
     require(path.suffix in (".jsonl", ".gz"), "expected JSONL or JSONL.gz")
@@ -69,11 +70,28 @@ def prepare_humaneval(root, source_file, revision, expected_sha256, count=164, s
             "expected exactly the 164 original HumanEval IDs")
     require(type(count) is int and 1 <= count <= 164, "count must be 1..164")
     require(type(seed) is int, "integer seed required")
-    chosen = sorted(items, key=lambda i: digest({"seed": seed, "item_id": i["item_id"]}))[:count]
-    selection = {"seed": seed, "candidate_count": len(items), "selected_count": count,
+    # Exclusions are source-quality decisions frozen BEFORE paid construction.
+    # They must carry inspectable evidence, not PALS scores or desired topology.
+    excluded, excluded_ids = [], set()
+    if exclusions is not None:
+        require(isinstance(exclusions, list), "exclusions must be a list")
+        for record in exclusions:
+            require(isinstance(record, dict) and set(record) == {"task_id", "reason", "evidence"},
+                    "exclusion needs exactly task_id, reason, evidence")
+            require(all(text(record.get(k)) for k in record), "empty exclusion field")
+            task_id = record["task_id"]
+            require(task_id in {i["task_id"] for i in items}, "unknown excluded task")
+            require(task_id not in excluded_ids, "duplicate exclusion")
+            excluded_ids.add(task_id)
+            excluded.append(dict(record))
+    eligible = [i for i in items if i["task_id"] not in excluded_ids]
+    require(bool(eligible), "no eligible source tasks")
+    require(count == 164 or count <= len(eligible), "count exceeds eligible tasks")
+    chosen = sorted(eligible, key=lambda i: digest({"seed": seed, "item_id": i["item_id"]}))[:count]
+    selection = {"seed": seed, "candidate_count": len(items), "selected_count": len(chosen),
                  "selected_ids": [i["item_id"] for i in chosen],
-                 "selected_task_ids": [i["task_id"] for i in chosen], "excluded": [],
-                 "sampling": "all tasks" if count == 164 else "ascending SHA256(seed,item_id)",
+                 "selected_task_ids": [i["task_id"] for i in chosen], "excluded": excluded,
+                 "sampling": ("all eligible tasks" if excluded else "all tasks") if count == 164 else "ascending SHA256(seed,item_id)",
                  "scope": "fixed candidates before construction; no score-based replacement"}
     root = private_dir(root)
     source = private_dir(root / "source")

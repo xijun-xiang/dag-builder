@@ -23,13 +23,14 @@ def reported_tokens(response):
     return max(candidates)
 
 
-def check_response(request, response, reserved_tokens, *, strict=False):
+def check_response(request, response, reserved_tokens, *, strict=False, content_gated=False):
     """Return only safe diagnostics; never include response text or credentials.
 
     Legacy runs may lack detailed usage. Strict new runs require all usage fields
     and the requested model ID. Explicit control violations are rejected in both.
     """
     violations = []
+    warnings = []
     usage = response.get("usage")
     if not isinstance(usage, dict):
         usage = {}
@@ -45,7 +46,7 @@ def check_response(request, response, reserved_tokens, *, strict=False):
             violations.append("inconsistent_usage_total")
     if token_count(usage.get("completion_tokens")):
         if usage["completion_tokens"] > request["max_tokens"]:
-            violations.append("completion_exceeds_requested_max_tokens")
+            (warnings if content_gated else violations).append("completion_exceeds_requested_max_tokens")
     if reported_tokens(response) > reserved_tokens:
         violations.append("usage_exceeds_reserved_allowance")
     disabled = (
@@ -70,10 +71,14 @@ def check_response(request, response, reserved_tokens, *, strict=False):
         violations.append("reasoning_returned_when_disabled")
     if strict and response.get("model") != request.get("model"):
         violations.append("response_model_mismatch")
-    return {
-        "contract_version": 1,
+    result = {
+        "contract_version": 2 if content_gated else 1,
         "strict": strict,
         "violations": violations,
         "reported_tokens": reported_tokens(response),
         "accounted_tokens": max(reserved_tokens, reported_tokens(response)),
     }
+    if content_gated:
+        result["warnings"] = warnings
+        result["policy"] = "content_gated_v1; reported usage above reservation still stops scheduling"
+    return result

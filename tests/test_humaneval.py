@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -55,14 +56,16 @@ def outputs(item):
 
 
 class Client:
-    def __init__(self, item):
+    def __init__(self, item, version="humaneval-reference-v1"):
         self.calls, self.outputs = [], outputs(item)
+        self.version = version
 
     def complete(self, request):
         self.calls.append(request)
         stage = next(s for s in STAGES if request["messages"][0]["content"] == prompt(
-            s, "humaneval-reference-v1", "humaneval", "reference_code_explanation"))
-        return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(self.outputs[stage])}}],
+            s, self.version, "humaneval", "reference_code_explanation"))
+        return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(self.outputs[stage]),
+                "reasoning_content": "NOT_A_FORMAL_TRAJECTORY" if request.get("thinking", {}).get("type") == "enabled" else ""}}],
                 "usage": {"total_tokens": 100}}
 
 
@@ -81,7 +84,8 @@ class HumanEvalTests(unittest.TestCase):
         return Pipeline(self.root, fixture_config(), client or Client(self.item))
 
     def test_config_explicit_source_and_bounded_concurrency(self):
-        for kwargs in ({"solution_source": "independent_generation"}, {"workers": 7}, {"prompt_version": "v1"}):
+        self.assertEqual(replace(fixture_config(), workers=32).workers, 32)
+        for kwargs in ({"solution_source": "independent_generation"}, {"workers": 33}, {"prompt_version": "v1"}):
             values = fixture_config().to_dict(); values.update(kwargs)
             with self.assertRaises(ValueError):
                 Config(**values)
@@ -130,6 +134,37 @@ class HumanEvalTests(unittest.TestCase):
                 prepare_humaneval(self.root / "partial", path, "a" * 40,
                                   hashlib.sha256(path.read_bytes()).hexdigest(), 1)
 
+    def test_source_exclusions_are_frozen_and_keep_full_denominator(self):
+        path = self.root / "source.jsonl"
+        path.write_text("".join(json.dumps(source(i)) + "\n" for i in range(164)))
+        checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+        excluded = [{"task_id": "HumanEval/124", "reason": "Fixture source defect", "evidence": "Fixture audit"}]
+        selection = prepare_humaneval(self.root / "clean", path, "a" * 40, checksum, exclusions=excluded)
+        self.assertEqual(selection["candidate_count"], 164)
+        self.assertEqual(selection["selected_count"], 163)
+        self.assertNotIn("HumanEval/124", selection["selected_task_ids"])
+        self.assertEqual(selection["excluded"], excluded)
+        self.assertEqual(len(read_json(self.root / "clean/source/normalized.json")), 164)
+        for bad in ([excluded[0], excluded[0]], [{**excluded[0], "task_id": "HumanEval/164"}],
+                    [{**excluded[0], "reason": ""}], [{"task_id": "HumanEval/124"}]):
+            with self.assertRaises(ValueError):
+                prepare_humaneval(self.root / "bad", path, "a" * 40, checksum, exclusions=bad)
+
+    def test_v2_thinking_body_only_export_and_resume(self):
+        config = replace(fixture_config(), prompt_version="humaneval-reference-v2", thinking="enabled", reasoning_effort="low")
+        client = Client(self.item, "humaneval-reference-v2")
+        write_once(self.root / "items.json", [self.item])
+        write_once(self.root / "selection.json", {"selected_ids": [self.item["item_id"]]})
+        result = Pipeline(self.root, config, client).run()
+        self.assertEqual(result["results"][0]["status"], "model_accepted")
+        dest = export_validation(self.root)
+        data = read_json(self.root / "items" / self.item["item_id"] / "dag.json")
+        self.assertEqual(data["construction_protocol"], "humaneval-reference-v2")
+        self.assertNotIn("NOT_A_FORMAL_TRAJECTORY", json.dumps(data))
+        self.assertNotIn("NOT_A_FORMAL_TRAJECTORY", (dest / "model_accepted.jsonl").read_text())
+        Pipeline(self.root, config, client).run()
+        self.assertEqual(len(client.calls), 6)
+
     def test_construct_export_and_resume_without_extra_calls(self):
         client = Client(self.item)
         runner = self.pipeline(client)
@@ -150,6 +185,18 @@ class HumanEvalTests(unittest.TestCase):
         self.assertFalse(row["human_approved"])
         self.assertTrue(row["model_accepted"])
 
+    def test_v3_program_fact_protocol_uses_same_structural_and_export_gates(self):
+        config = replace(fixture_config(), prompt_version="humaneval-reference-v3", workers=32)
+        client = Client(self.item, "humaneval-reference-v3")
+        write_once(self.root / "items.json", [self.item])
+        write_once(self.root / "selection.json", {"selected_ids": [self.item["item_id"]]})
+        result = Pipeline(self.root, config, client).run()
+        self.assertEqual(result["results"][0]["status"], "model_accepted")
+        dest = export_validation(self.root)
+        row = json.loads((dest / "model_accepted.jsonl").read_text())
+        self.assertEqual(row["dag"]["construction_protocol"], "humaneval-reference-v3")
+        self.assertFalse(row["human_approved"])
+
     def test_explanation_cannot_rewrite_reference_answer(self):
         data = stage_input("solve", self.item, {})
         with self.assertRaises(InvalidOutput):
@@ -163,6 +210,18 @@ class HumanEvalTests(unittest.TestCase):
         changed["nodes"][0].update(source_field="reference_code", source_quote="sum(left)")
         with self.assertRaisesRegex(InvalidOutput, "reasoning premise"):
             validate("atomize", changed, data)
+
+    def test_quality_veto_does_not_overwrite_accepted_model_result(self):
+        self.pipeline().run()
+        directory = self.root / "items" / self.item["item_id"]
+        original = read_json(directory / "result.json")
+        audit = {"item_id": self.item["item_id"], "task_id": self.item["task_id"], "decision": "reject",
+                 "reason": "Synthetic audit counterexample", "evidence": "Synthetic-only logical check",
+                 "solve_output_sha256": digest(read_json(directory / "solve/output.json"))}
+        write_once(self.root / "quality_exclusions.json", [audit])
+        with self.assertRaisesRegex(InvalidOutput, "no accepted"):
+            export_validation(self.root)
+        self.assertEqual(read_json(directory / "result.json"), original)
 
     def test_bad_semantics_are_not_retried_for_acceptance(self):
         client = Client(self.item)

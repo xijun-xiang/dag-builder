@@ -39,7 +39,94 @@ def fixture():
     return record
 
 
+def v5_fixture():
+    record = fixture()
+    dag = record['dag']
+    dag['construction_protocol'] = 'humaneval-reference-v5'
+    dag['nodes'][0].update(kind='given', source_field='reference_code',
+                           source_quote="return 'PRIVATE_ANSWER_SENTINEL'",
+                           statement='The program returns a fixed string literal.')
+    for n in dag['nodes'][1:-1]:
+        n['statement'] = f'The intermediate quantity has magnitude {n["node_id"]}.'
+        n['source_quote'] = n['statement']
+    dag['nodes'][-1]['source_quote'] = record['source']['canonical_solution']
+    dag['reference_solution'] = {'rationale': ' '.join(n['statement'] for n in dag['nodes'][:-1])}
+    for key in ('solution_review', 'dag_review'):
+        dag[key]['checks'].update(root_premises_sound=True, reference_behavior_faithful=True)
+    dag['dag_review']['checks'].update(self_contained_statements=True, no_invariant_assumed=True,
+                                      code_facts_grounded=True)
+    record['dag_sha256'] = digest(dag)
+    return record
+
+
 class HumanEvalValidationTests(unittest.TestCase):
+    def test_v5_code_facts_drop_reference_quotes_and_answer(self):
+        record = v5_fixture()
+        case = normalize(record, 'humaneval')
+        self.assertEqual(case['steps'][0]['statement'], record['dag']['nodes'][0]['statement'])
+        self.assertNotIn('PRIVATE_', json.dumps(case))
+        self.assertNotIn('source_quote', json.dumps(case))
+        self.assertFalse(any(n['kind'] == 'answer' for n in case['steps']))
+
+    def test_v5_requires_grounding_review_even_when_other_checks_pass(self):
+        for missing in (True, False):
+            record = v5_fixture()
+            checks = record['dag']['dag_review']['checks']
+            if missing:
+                del checks['code_facts_grounded']
+            else:
+                checks['code_facts_grounded'] = False
+            record['dag_sha256'] = digest(record['dag'])
+            with self.assertRaisesRegex(ValueError, 'Unaccepted'):
+                normalize(record, 'humaneval')
+
+    def test_v5_rejects_invalid_citations_classification_and_copied_code(self):
+        for change in ({'source_quote': 'invented'}, {'kind': 'knowledge'}, {'kind': 'derived'},
+                       {'statement': "return 'PRIVATE_ANSWER_SENTINEL'"},
+                       {'statement': 'By step 2.'}, {'statement': '<step>direct fact</step>'}):
+            record = v5_fixture()
+            record['dag']['nodes'][0].update(change)
+            record['dag_sha256'] = digest(record['dag'])
+            with self.assertRaises(ValueError):
+                normalize(record, 'humaneval')
+
+    def test_v5_cannot_be_relabelled_as_v4_to_evade_code_policy(self):
+        record = v5_fixture()
+        record['dag']['construction_protocol'] = 'humaneval-reference-v4'
+        record['dag_sha256'] = digest(record['dag'])
+        with self.assertRaisesRegex(ValueError, 'code-answer sources'):
+            normalize(record, 'humaneval')
+
+    def test_v4_requires_quality_checks_and_self_contained_statements(self):
+        r = fixture()
+        r["dag"]["construction_protocol"] = "humaneval-reference-v4"
+        for n in r["dag"]["nodes"][:-1]:
+            n["statement"] = f"The intermediate quantity has magnitude {n['node_id']}."
+        r["dag_sha256"] = digest(r["dag"])
+        with self.assertRaisesRegex(ValueError, "Unaccepted"):
+            normalize(r, "humaneval")
+        for key in ("solution_review", "dag_review"):
+            r["dag"][key]["checks"].update(root_premises_sound=True, reference_behavior_faithful=True)
+        r["dag"]["dag_review"]["checks"].update(self_contained_statements=True, no_invariant_assumed=True)
+        r["dag_sha256"] = digest(r["dag"])
+        case = normalize(r, "humaneval")
+        self.assertNotIn("PRIVATE_", json.dumps(case))
+        r["dag"]["nodes"][0]["statement"] += " By step 4."
+        r["dag_sha256"] = digest(r["dag"])
+        with self.assertRaisesRegex(ValueError, "positional"):
+            normalize(r, "humaneval")
+
+    def test_versioned_v2_construction_is_accepted_without_changing_scoring(self):
+        original = fixture()
+        upgraded = copy.deepcopy(original)
+        for version in ("humaneval-reference-v2", "humaneval-reference-v3"):
+            upgraded["dag"]["construction_protocol"] = version
+            upgraded["dag_sha256"] = digest(upgraded["dag"])
+            old, new = normalize(original, "humaneval"), normalize(upgraded, "humaneval")
+            old.pop("source_dag_sha256")
+            new.pop("source_dag_sha256")
+            self.assertEqual(old, new)
+
     def test_explicit_benchmark_and_source_mismatch_rejected(self):
         with self.assertRaises(ValueError):
             normalize(fixture())
