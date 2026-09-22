@@ -17,4 +17,9 @@ test "$(realpath "$LCB_RUN")" = "$LCB_RUN"
 cd "$LCB_RUN"
 export PYTHONDONTWRITEBYTECODE=1
 export TMPDIR="$LCB_RUN/scratch"
+if test ! -e execution-input.json; then
+  # Restore the exact frozen JSON bytes on the compute node, never overwrite.
+  test -f execution-input.json.gz
+  gzip -dk execution-input.json.gz
+fi
 /usr/bin/python3 -B verify_livecodebench_reference.py --root "$LCB_RUN"
