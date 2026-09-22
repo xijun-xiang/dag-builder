@@ -92,6 +92,8 @@ class Pipeline:
         isolate_uncertain_failures=False,
         resilient=False,
     ):
+        if type(self) is Pipeline and config.task_type == "livecodebench":
+            raise ValueError("LiveCodeBench requires its reference/execution-gated pipeline")
         if type(self) is Pipeline and config.prompt_version in (
             "gpqa-repair-v1",
             "gpqa-revision-v1",

@@ -30,6 +30,8 @@ REVISION_STAGES = ("revise", "audit", "adjudicate")
 
 
 def stages_for(config):
+    if config.task_type == "livecodebench":
+        return ("reference_code",)
     if config.prompt_version == "gpqa-revision-v1":
         return REVISION_STAGES
     if config.prompt_version == "gpqa-repair-v1":
@@ -42,6 +44,10 @@ def stages_for(config):
 def prompt(
     stage, version="v1", task_type="mmlu", solution_source="independent_generation"
 ):
+    if task_type == "livecodebench":
+        if stage != "reference_code" or version != "livecodebench-reference-v1":
+            raise ValueError("unsupported LiveCodeBench stage or protocol")
+        return files("dag_builder").joinpath("prompts", version, stage + ".md").read_text(encoding="utf-8")
     allowed = (
         REVISION_STAGES
         if version == "gpqa-revision-v1"

@@ -61,13 +61,14 @@ class Config:
             raise ValueError(
                 f"at most {worker_limit} workers are supported for this task"
             )
-        if self.task_type not in ("mmlu", "gsm8k", "gpqa", "humaneval"):
+        if self.task_type not in ("mmlu", "gsm8k", "gpqa", "humaneval", "livecodebench"):
             raise ValueError("unknown task_type")
         versions = {
             "mmlu": ("v1", "mmlu-thinking-v1"),
             "gsm8k": ("gsm8k-v1",),
             "gpqa": ("gpqa-reference-v1", "gpqa-repair-v1", "gpqa-revision-v1"),
             "humaneval": ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"),
+            "livecodebench": ("livecodebench-reference-v1",),
         }[self.task_type]
         if self.prompt_version not in versions:
             raise ValueError("prompt version does not match task_type")

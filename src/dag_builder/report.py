@@ -7,7 +7,7 @@ from collections import Counter
 from .run_status import paused_items
 from .storage import digest, read_json, write_bytes_once, write_once
 
-REPORT_TEMPLATE_VERSION = "6"
+REPORT_TEMPLATE_VERSION = "7"
 
 
 def report_title(items, selection):
@@ -24,6 +24,8 @@ def report_title(items, selection):
         return "GPQA-Diamond DAG 构造审查"
     if task_types == {"humaneval"}:
         return "HumanEval 参考代码解释与 DAG 审查（未执行代码）"
+    if task_types == {"livecodebench"}:
+        return "LiveCodeBench v6 参考程序候选（需独立执行验收）"
     return "DAG 构造审查"
 
 
@@ -113,7 +115,7 @@ def render(root):
             + "</h2>"
         )
         rendered_question = item["question"]
-        if item.get("task_type") not in ("gsm8k", "humaneval"):
+        if item.get("task_type") not in ("gsm8k", "humaneval", "livecodebench"):
             rendered_question += "\n" + "\n".join(
                 f"{label}. {choice}" for label, choice in zip("ABCD", item["choices"])
             )
@@ -121,6 +123,8 @@ def render(root):
         if item.get("task_type") == "humaneval":
             blocks.append("<h3>官方参考 completion（未执行）</h3><pre>"
                           + html.escape(item["canonical_solution"]) + "</pre>")
+        elif item.get("task_type") == "livecodebench":
+            blocks.append("<p>模型参考程序候选；不是官方 gold，也未自动通过测试。</p>")
         else:
             blocks.append("<p>数据集答案：" + html.escape(item["gold_answer"]) + "</p>")
         if item.get("task_type") == "gpqa":
@@ -161,6 +165,7 @@ def render(root):
                 + "</pre>"
             )
         for label, path in [
+            ("LiveCodeBench 参考程序候选", directory / "reference_code/output.json"),
             ("修复前原始状态与产物", directory / "baseline.json"),
             ("确定性拓扑排序", directory / "topology.json"),
             ("模型复核与修复提案", directory / "repair/output.json"),

@@ -5,7 +5,7 @@
 
 ## 当前实现范围
 
-已实现严格离线导入和 5 题固定选样；参考代码验证、DAG 构建和 PALS 正式
+已实现严格离线导入、5 题固定选样和单候选参考代码生成；参考代码验证、DAG 构建和 PALS 正式
 执行各有独立验收门槛，未完成前不得把本页写成“LiveCodeBench 实验通过”。
 旧 GPQA/HumanEval 的图算子、g/M/N/D 与统计方法不变。
 
@@ -44,6 +44,20 @@ PYTHONPATH=src python -m dag_builder.livecodebench_source \
 5. DAG 冻结后，三个既有模型运行 E1/E2，分别记录独立 canary 与正式结果。
 
 ## 后续正式统计（预设，不表示已经运行）
+
+### 当前验收记录
+
+- B1 数据作业 `111417`，COMPLETED/0:0，27 秒，2 CPU/4GB，无 GPU。
+  缓存文件与上述官方 SHA256 完全一致，完整导入 175 题，未下载重复数据。
+- 固定五题：LeetCode 3709、AtCoder abc396_a、LeetCode 3759、
+  AtCoder abc398_c、LeetCode 3781。隐藏测试独立保存在私有 `tests/`。
+- 参考生成配置 `configs/livecodebench-v6-canary-reference.json`：5 workers，
+  thinking enabled/high，32768 输出上限；本阶段最多 20 请求/100 万预留 token。
+  后续构图最多使用剩余的 140 请求/700 万额度，两阶段合计不超过本次授权。
+- 启动器 `scripts/run_private_pilot.py` 会冻结代码与提示。只生成候选；
+  不执行程序、不自动构图，不把一次响应解析成功标为数据质量通过。
+
+### 正式实验预设
 
 - E1：同一拆树基线，合法完整分支交换 vs 相邻直接依赖逆置；主终点为
   共同题、共同目标上的 M(破坏)−M(合法)。所有适用题纳入，不人为造分支。
