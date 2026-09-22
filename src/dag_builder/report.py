@@ -7,7 +7,7 @@ from collections import Counter
 from .run_status import paused_items
 from .storage import digest, read_json, write_bytes_once, write_once
 
-REPORT_TEMPLATE_VERSION = "7"
+REPORT_TEMPLATE_VERSION = "8"
 
 
 def report_title(items, selection):
@@ -25,6 +25,8 @@ def report_title(items, selection):
     if task_types == {"humaneval"}:
         return "HumanEval 参考代码解释与 DAG 审查（未执行代码）"
     if task_types == {"livecodebench"}:
+        if all(item.get("reference_origin") == "official_editorial" for item in items):
+            return "LiveCodeBench 官方题解构图可行性试用（非正式验收）"
         if all(item.get("reference_execution") == "passed_frozen_tests_not_exhaustive_proof" for item in items):
             return "LiveCodeBench v6：测试通过参考程序的解释与 DAG 审查"
         return "LiveCodeBench v6 参考程序候选（需独立执行验收）"
@@ -126,7 +128,9 @@ def render(root):
             blocks.append("<h3>官方参考 completion（未执行）</h3><pre>"
                           + html.escape(item["canonical_solution"]) + "</pre>")
         elif item.get("task_type") == "livecodebench":
-            blocks.append("<p>参考来源：模型生成，非官方 gold；执行状态："
+            label = ("官方题解；派生 DAG 非官方标注" if item.get("reference_origin") == "official_editorial"
+                     else "模型生成，非官方 gold")
+            blocks.append("<p>参考来源：" + label + "；执行状态："
                           + html.escape(item["reference_execution"]) + "。测试通过不证明 DAG 正确。</p>")
         else:
             blocks.append("<p>数据集答案：" + html.escape(item["gold_answer"]) + "</p>")
