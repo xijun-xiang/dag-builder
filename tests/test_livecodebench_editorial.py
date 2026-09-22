@@ -141,6 +141,12 @@ class EditorialTests(unittest.TestCase):
             self.assertFalse(read_json(directory / "editorial-candidate.json")["formal_eligible"])
             self.assertNotIn("private_test_cases", json.dumps(client.calls))
             self.assertNotIn("tests_sha256", json.dumps(client.calls))
+            manifest_path = root / "editorial-manifest.json"
+            manifest = read_json(manifest_path)
+            manifest["max_calls"] = 1
+            manifest_path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "remaining shared editorial allocation"):
+                pipeline.run()
 
 
 if __name__ == "__main__":

@@ -80,7 +80,7 @@ def validate_audit(value):
         require(all(value["checks"][k] is True for k in CHECKS), "unresolved editorial review")
 
 
-def prepare(source_root, source_file, root):
+def prepare(source_root, source_file, root, previous_pilot=None):
     source_root, source_file = Path(source_root), Path(source_file)
     old_manifest = read_json(source_root / "prepared-manifest.json")
     old_items = read_json(source_root / "items.json")
@@ -92,9 +92,26 @@ def prepare(source_root, source_file, root):
             "prior reference campaign must be finished")
     prior_requests = list(source_root.glob("items/*/*/attempt-*/request.json"))
     spent = sum(read_json(p)["reserved_tokens"] for p in prior_requests)
+    editorial_calls, editorial_reserved = 0, 0
+    previous_manifest_hash = None
+    if previous_pilot is not None:
+        previous = Path(previous_pilot)
+        completion = read_json(previous / "completion.json")
+        require(completion["status"] == "processed" and not completion["global_stop"],
+                "previous pilot must be safely finished before a revision")
+        prior_manifest = read_json(previous / "editorial-manifest.json")
+        require(prior_manifest["protocol"] == PROTOCOL, "wrong predecessor protocol")
+        requests = list(previous.glob("items/*/*/attempt-*/request.json"))
+        editorial_calls = prior_manifest.get("prior_editorial_calls", 0) + len(requests)
+        editorial_reserved = prior_manifest.get("prior_editorial_reserved_tokens", 0) + sum(
+            read_json(p)["reserved_tokens"] for p in requests)
+        previous_manifest_hash = digest(prior_manifest)
+    require(editorial_calls < 12 and editorial_reserved < 600000, "editorial allocation exhausted")
     # This small additional allocation belongs to the original five-item budget.
     require(len(prior_requests) + 12 <= 160 and spent + 600000 <= 8000000, "shared approval exceeded")
     sources = read_json(source_file)
+    if previous_pilot is not None:
+        require(digest(sources) == prior_manifest["source_snapshots_sha256"], "revision changed sources")
     require(isinstance(sources, list) and len(sources) == 2, "fixed two-item source feasibility canary")
     require({s["question_id"] for s in sources} == {"abc396_a", "abc398_c"}, "pilot sources changed")
     by_qid = {i["question_id"]: i for i in old_items if i["platform"] == "atcoder"}
@@ -116,7 +133,10 @@ def prepare(source_root, source_file, root):
     write_once(root / "editorial-manifest.json", {
         "protocol": PROTOCOL, "items_sha256": digest(items), "selection_sha256": digest(selection),
         "source_snapshots_sha256": digest(sources), "prior_reference_calls": len(prior_requests),
-        "prior_reference_reserved_tokens": spent, "max_calls": 12, "max_reserved_tokens": 600000,
+        "prior_reference_reserved_tokens": spent,
+        "prior_editorial_calls": editorial_calls, "prior_editorial_reserved_tokens": editorial_reserved,
+        "previous_editorial_manifest_sha256": previous_manifest_hash,
+        "max_calls": 12 - editorial_calls, "max_reserved_tokens": 600000 - editorial_reserved,
         "claim": "pending isolated code tests and independent semantic audit; never formal-eligible here"})
     write_once(root / "sources.json", sources)
     return selection
@@ -128,6 +148,9 @@ class EditorialPilot(Pipeline):
         require(self.config.max_calls <= 12 and self.config.max_reserved_tokens <= 600000,
                 "editorial canary allocation exceeded")
         manifest = read_json(self.root / "editorial-manifest.json")
+        require(self.config.max_calls <= manifest.get("max_calls", 12)
+                and self.config.max_reserved_tokens <= manifest.get("max_reserved_tokens", 600000),
+                "config exceeds remaining shared editorial allocation")
         items = read_json(self.root / "items.json")
         require(manifest["protocol"] == PROTOCOL and digest(items) == manifest["items_sha256"]
                 and digest(read_json(self.root / "selection.json")) == manifest["selection_sha256"]
@@ -176,10 +199,11 @@ def main():
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--editorials", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--previous-pilot", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
     with run_lock(args.root):
-        print(json.dumps(prepare(args.source, args.editorials, args.root)))
+        print(json.dumps(prepare(args.source, args.editorials, args.root, args.previous_pilot)))
 
 
 if __name__ == "__main__":
