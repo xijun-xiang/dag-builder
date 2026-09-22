@@ -1,9 +1,11 @@
 """Synthetic source/graph/API fixtures only; no network or reference execution."""
 import copy
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from dag_builder.config import Config
 from dag_builder.livecodebench_editorial import CHECKS, EditorialPilot, PROTOCOL, validate_audit, validate_editorial, validate_graph
@@ -55,6 +57,33 @@ class Client:
 
 
 class EditorialTests(unittest.TestCase):
+    def test_official_execution_preparation_binds_original_tests(self):
+        scripts = str(Path(__file__).resolve().parents[1] / "scripts")
+        with patch.object(sys, "path", [scripts, *sys.path]):
+            from prepare_livecodebench_editorial_execution import prepare
+        with tempfile.TemporaryDirectory() as folder:
+            root, item = Path(folder).resolve(), fixture()
+            case = {"testtype": "stdin", "input": "hi\n", "output": "hi\n"}
+            bundle = {"public_test_cases": json.dumps([case]), "private_test_cases": json.dumps([case])}
+            item.update(tests_sha256=digest(bundle), source_content_sha256="frozen-source")
+            original = {k: v for k, v in item.items() if k not in
+                        ("official_editorial", "editorial_source", "reference_origin",
+                         "reference_code", "reference_execution")}
+            write_once(root / "original/items.json", [original])
+            write_once(root / "original/prepared-manifest.json", {"items_sha256": digest([original])})
+            write_once(root / "original/tests" / (item["item_id"] + ".json"), bundle)
+            write_once(root / "editorial/items.json", [item])
+            write_once(root / "editorial/editorial-manifest.json",
+                       {"protocol": PROTOCOL, "items_sha256": digest([item])})
+            result = prepare(root / "editorial", root / "original", root / "bundle")
+            self.assertEqual(result, {"items": 1, "tests": 2})
+            self.assertEqual(read_json(root / "bundle/input-manifest.json")["reference_origin"],
+                             "official_editorial")
+            self.assertEqual(read_json(root / "bundle/execution-input.json")[0]["code"], item["reference_code"])
+            (root / "original/tests" / (item["item_id"] + ".json")).write_text("{}")
+            with self.assertRaisesRegex(ValueError, "test bundle changed"):
+                prepare(root / "editorial", root / "original", root / "tampered")
+
     def test_source_identity_and_category(self):
         item = fixture()
         validate_editorial(item)
