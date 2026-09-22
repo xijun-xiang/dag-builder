@@ -13,6 +13,9 @@
 [2026-09-22 正式实验结果索引](docs/PALS_RESULTS_20260922.md)记录 GPQA/HumanEval
 三模型的已验收主结果、有效样本分母、协议差异及私有产物定位；保留负向和不确定结果。
 
+[LiveCodeBench v6 接入进度与协议](docs/livecodebench-validation.md)：固定第六批
+175 题、私有测试隔离、5 题 score-blind canary；未验收前不标为正式实验完成。
+
 ## PALS 验证实验（独立子项目）
 
 [pals-validation/](pals-validation/README.md) 将 GPQA-Diamond DAG 用于 E1 换序、E2 固定祖先前缀续写验证，单独安装、单独运行，不改变 DAG Builder 的依赖和 API。只需要 PALS 时可以单独复制这个子目录；真实实验另需数据文件、模型权重及 GPU 推理环境。数学协议、逐 token 证据、续跑与验收说明均在子目录中。
