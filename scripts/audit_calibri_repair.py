@@ -10,7 +10,9 @@ from hashlib import sha256
 from pathlib import Path
 
 from dag_builder.calibri_normalize import assemble_graph, public_input
-from dag_builder.calibri_repair import apply_repair, validate_repair_audit, verify_repair
+from dag_builder.calibri_repair import (
+    apply_versioned_repair, assemble_repaired_graph, dependency_data, validate_repair_audit, verify_repair,
+)
 from dag_builder.config import Config
 from dag_builder.response_contract import check_response
 from dag_builder.schemas import parse_object, require
@@ -39,17 +41,17 @@ def audit(root):
         inputs = {"repair": {**data, **seed}}
         normalized = record = graph = None
         if (directory / "repair-record.json").exists():
-            normalized, record = apply_repair(read_json(directory / "repair/output.json"),
-                                              seed["previous_normalized"], item)
+            normalized, record = apply_versioned_repair(read_json(directory / "repair/output.json"),
+                                              seed["previous_normalized"], item, config.prompt_version)
             require(normalized == read_json(directory / "normalization.json")
                     and record == read_json(directory / "repair-record.json"), "repair replay mismatch")
             row.update(additions=sum(c["operation"] == "add_question_premise" for c in record["changes"]),
                        removals=sum(c["operation"] == "remove" for c in record["changes"]),
                        original_nodes=len(seed["previous_normalized"]["nodes"]),
                        repaired_nodes=len(normalized["nodes"]))
-            inputs["dependencies"] = {**data, "normalized": normalized}
+            inputs["dependencies"] = dependency_data(data, normalized, record)
         if (directory / "dependencies/output.json").exists():
-            graph = assemble_graph(read_json(directory / "dependencies/output.json"), normalized, item)
+            graph = assemble_repaired_graph(read_json(directory / "dependencies/output.json"), normalized, item, record)
             inputs["review_dag"] = {**data, "normalized": normalized, "candidate": graph,
                                    "previous_normalized": seed["previous_normalized"], "repair_record": record}
         for stage in ("repair", "dependencies", "review_dag"):
@@ -81,10 +83,12 @@ def audit(root):
                     require(parse_object(choices[0]["message"]["content"]) == read_json(stage_dir / "output.json"),
                             "parsed output differs from raw content")
             require(responses <= 1, "semantic resampling detected")
+            if (stage_dir / "output.json").exists():
+                require(responses == 1, "accepted parsed output has no raw response")
         if result["status"] == "model_accepted":
             dag = read_json(directory / "dag.json")
             review = read_json(directory / "review_dag/output.json")
-            validate_repair_audit(review)
+            validate_repair_audit(review, config.prompt_version)
             require(review["decision"] == "accept" and dag["dag_review"] == review, "unaccepted semantic audit")
             require(dag["nodes"] == graph["nodes"] and dag["normalization"] == normalized
                     and dag["repair_record"] == record and dag["source"] == item

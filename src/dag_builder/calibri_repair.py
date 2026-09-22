@@ -23,6 +23,7 @@ from .stages import payload
 from .storage import digest, private_dir, read_json, write_bytes_once, write_once
 
 PROTOCOL = "calibri-lcb-repair-v1"
+CHECKED_PROTOCOL = "calibri-lcb-repair-v2"
 STEP_FIELDS = ("kind", "statement", "source_refs", "support_type", "normalization_note")
 REPAIR_CHECKS = (
     "added_premises_explicit_in_question", "removed_nodes_not_necessary",
@@ -91,12 +92,39 @@ def apply_repair(value, previous, item):
     return normalized, record
 
 
-def validate_repair_audit(value):
+def apply_versioned_repair(value, previous, item, protocol=PROTOCOL):
+    if protocol == CHECKED_PROTOCOL:
+        from .calibri_repair_plan import apply_checked_repair
+        return apply_checked_repair(value, previous, item)
+    require(protocol == PROTOCOL, "unknown repair protocol")
+    return apply_repair(value, previous, item)
+
+
+def assemble_repaired_graph(value, normalized, item, record):
+    graph = assemble_graph(value, normalized, item)
+    if record["protocol"] == CHECKED_PROTOCOL:
+        from .calibri_repair_plan import validate_premise_paths
+        validate_premise_paths(graph, record)
+    return graph
+
+
+def dependency_data(data, normalized, record):
+    result = {**data, "normalized": normalized}
+    if record["protocol"] == CHECKED_PROTOCOL:
+        result["premise_inventory"] = record["premise_inventory"]
+    return result
+
+
+def validate_repair_audit(value, protocol=PROTOCOL):
     validate_audit(value)
+    checks = REPAIR_CHECKS
+    if protocol == CHECKED_PROTOCOL:
+        from .calibri_repair_plan import AUDIT_CHECKS
+        checks += AUDIT_CHECKS
     require(all(k in value["checks"] and (type(value["checks"][k]) is bool or value["checks"][k] is None)
-                for k in REPAIR_CHECKS), "missing repair audit check")
+                for k in checks), "missing repair audit check")
     if value["decision"] == "accept":
-        require(all(value["checks"][k] is True for k in REPAIR_CHECKS), "unresolved repair audit")
+        require(all(value["checks"][k] is True for k in checks), "unresolved repair audit")
 
 
 def _failed_seed(parent, item, config):
@@ -141,28 +169,79 @@ def _failed_seed(parent, item, config):
             "previous_result": result}, paths
 
 
-def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000):
-    """Freeze all dependency failures, never hand-pick the easiest recoveries."""
+def _used_budget(root, config):
+    proof = read_json(root / "calibri-normalization-manifest.json")
+    requests = list(root.glob("items/*/*/attempt-*/request.json"))
+    prior_calls = proof["prior_calls"] + len(requests)
+    prior_reserved = proof["prior_reserved_tokens"]
+    for path in requests:
+        request = read_json(path)
+        account = request["reserved_tokens"]
+        if (path.parent / "response.json").exists():
+            check = check_response(request["payload"], read_json(path.parent / "response.json")["body"],
+                account, strict=config.strict_response_contract, content_gated=config.content_gated_response)
+            require(not check["violations"], "source run has API contract violations")
+            account = check["accounted_tokens"]
+        prior_reserved += account
+    return prior_calls, prior_reserved
+
+
+def _development_feedback(history, item):
+    """Only bound public material; never send run paths or hidden test metadata."""
+    directory = history / "items" / item["item_id"]
+    result = read_json(directory / "result.json")
+    require(result["status"] == "rejected" and result["stage"] == "review_dag",
+            "checked pilot only revisits v1 semantic rejections")
+    review = read_json(directory / "review_dag/output.json")
+    validate_repair_audit(review)
+    require(review["decision"] == "reject" and review["reason"] == result["reason"], "history rejection mismatch")
+    paths = list((directory / "review_dag").glob("attempt-*/response.json"))
+    require(len(paths) == 1, "ambiguous historical review")
+    response = read_json(paths[0])["body"]
+    choices = response.get("choices", [])
+    require(len(choices) == 1 and choices[0].get("finish_reason") == "stop"
+            and parse_object(choices[0]["message"].get("content")) == review, "historical review response changed")
+    return {"protocol": PROTOCOL, "status": "prior_development_failure_not_an_independent_test",
+            "normalization": read_json(directory / "normalization.json"),
+            "repair_record": read_json(directory / "repair-record.json"), "review": review}
+
+
+def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
+                   prompt_version=PROTOCOL, history=None):
+    """Freeze all eligible failures; v2 explicitly accounts for the prior pilot."""
     parent, root = Path(parent).resolve(), private_dir(root)
-    require(parent != root, "repair must use a new run directory")
+    require(parent != root and not root.is_relative_to(parent), "repair must use a new run directory")
+    require(prompt_version in (PROTOCOL, CHECKED_PROTOCOL), "unknown repair version")
     old_config = Config.load(parent / "run_config.json")
     require(old_config.prompt_version == "calibri-lcb-normalize-v2"
             and not (parent / "calibri-repair-manifest.json").exists(), "one repair pass only, from v2")
     require(read_json(parent / "completion.json")["status"] == "processed", "parent must have completed")
     original_items = verify_prepared(parent, old_config)
     old_proof = read_json(parent / "calibri-normalization-manifest.json")
-    requests = list(parent.glob("items/*/*/attempt-*/request.json"))
-    prior_calls = old_proof["prior_calls"] + len(requests)
-    prior_reserved = old_proof["prior_reserved_tokens"]
-    for path in requests:
-        request = read_json(path)
-        account = request["reserved_tokens"]
-        if (path.parent / "response.json").exists():
-            check = check_response(request["payload"], read_json(path.parent / "response.json")["body"],
-                account, strict=old_config.strict_response_contract, content_gated=old_config.content_gated_response)
-            require(not check["violations"], "source run has API contract violations")
-            account = check["accounted_tokens"]
-        prior_reserved += account
+    history_files, history_items, history_results = {}, {}, {}
+    if prompt_version == CHECKED_PROTOCOL:
+        require(history is not None, "checked revision requires explicit prior development history")
+        history = Path(history).resolve()
+        require(history != root and not root.is_relative_to(history), "history must be outside new run")
+        history_config = Config.load(history / "run_config.json")
+        require(history_config.prompt_version == PROTOCOL and read_json(history / "completion.json")["status"] == "processed",
+                "only a completed v1 pilot is valid revision history")
+        history_items = {i["item_id"]: i for i in verify_repair(history, history_config)}
+        require(digest(read_json(history / "parent-evidence/items.json")) == digest(original_items),
+                "revision history belongs to another source cohort")
+        for item_id in history_items:
+            history_results[item_id] = read_json(history / "items" / item_id / "result.json")
+        for name in ("items.json", "selection.json", "run_config.json", "completion.json",
+                     "calibri-normalization-manifest.json", "calibri-repair-manifest.json"):
+            history_files[name] = (history / name).read_bytes()
+        for folder in ("evidence", "parent-evidence", "repair-seeds", "items"):
+            for path in (history / folder).rglob("*"):
+                if path.is_file() and path.name != ".lock":
+                    history_files[str(path.relative_to(history))] = path.read_bytes()
+        prior_calls, prior_reserved = _used_budget(history, history_config)
+    else:
+        require(history is None, "v1 does not accept revision history")
+        prior_calls, prior_reserved = _used_budget(parent, old_config)
     require(type(max_calls) is int and 0 < max_calls <= CAMPAIGN_CALL_LIMIT - prior_calls,
             "campaign call allocation exceeded")
     require(type(max_reserved_tokens) is int and 0 < max_reserved_tokens <= CAMPAIGN_TOKEN_LIMIT - prior_reserved,
@@ -171,8 +250,21 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000):
     for item in original_items:
         result_path = parent / "items" / item["item_id"] / "result.json"
         result = read_json(result_path)
+        if prompt_version == CHECKED_PROTOCOL and item["item_id"] not in history_items:
+            exclusions.append({"item_id": item["item_id"], "status": result["status"], "stage": result["stage"],
+                               "reason": "outside prior failed-cohort development revision"})
+            files[str(result_path.relative_to(parent))] = result_path.read_bytes()
+            continue
+        if prompt_version == CHECKED_PROTOCOL and history_results[item["item_id"]]["status"] == "model_accepted":
+            exclusions.append({"item_id": item["item_id"], "status": "model_accepted", "stage": "review_dag",
+                               "reason": "accepted in previous repair; not resampled"})
+            files[str(result_path.relative_to(parent))] = result_path.read_bytes()
+            continue
         if result.get("status") == "needs_review" and result.get("stage") == "dependencies":
             seed, paths = _failed_seed(parent, item, old_config)
+            if prompt_version == CHECKED_PROTOCOL:
+                require(history_items[item["item_id"]] == item, "revision source item changed")
+                seed["development_feedback"] = _development_feedback(history, item)
             items.append(item)
             seeds[item["item_id"]] = seed
             for path in paths:
@@ -184,10 +276,12 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000):
     require(bool(items), "no eligible dependency failures")
     selection = {"selected_ids": [i["item_id"] for i in items], "selected_count": len(items),
                  "source_count": len(original_items), "excluded": exclusions,
-                 "sampling": "all v2 dependency-stage failures, one repair each; no PALS-based selection"}
+                 "sampling": ("all remaining v1 semantic failures, checked development revision; no PALS-based selection"
+                              if prompt_version == CHECKED_PROTOCOL else
+                              "all v2 dependency-stage failures, one repair each; no PALS-based selection")}
     for name in ("items.json", "selection.json", "run_config.json", "completion.json", "calibri-normalization-manifest.json"):
         files[name] = (parent / name).read_bytes()
-    proof = {**old_proof, "prompt_version": PROTOCOL, "items_sha256": digest(items),
+    proof = {**old_proof, "prompt_version": prompt_version, "items_sha256": digest(items),
              "selection_sha256": digest(selection), "max_calls": max_calls, "max_reserved_tokens": max_reserved_tokens,
              "prior_calls": prior_calls, "prior_reserved_tokens": prior_reserved}
     for path in (parent / "evidence").rglob("*"):
@@ -195,14 +289,19 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000):
             write_bytes_once(root / path.relative_to(parent), path.read_bytes())
     for name, content in files.items():
         write_bytes_once(root / "parent-evidence" / name, content)
+    for name, content in history_files.items():
+        write_bytes_once(root / "revision-history" / name, content)
     for item_id, seed in seeds.items():
         write_once(root / "repair-seeds" / (item_id + ".json"), seed)
     from hashlib import sha256
-    manifest = {"protocol": PROTOCOL, "max_repair_rounds": 1, "parent_run": str(parent),
+    manifest = {"protocol": prompt_version, "max_repair_rounds": 1, "parent_run": str(parent),
                 "parent_files": {name: sha256(content).hexdigest() for name, content in files.items()},
                 "seed_sha256": {key: digest(value) for key, value in seeds.items()},
                 "items_sha256": digest(items), "selection_sha256": digest(selection),
                 "normalization_manifest_sha256": digest(proof)}
+    if prompt_version == CHECKED_PROTOCOL:
+        manifest["development_iteration"] = 2
+        manifest["history_files"] = {name: sha256(content).hexdigest() for name, content in history_files.items()}
     for name, value in (("items.json", items), ("selection.json", selection),
                         ("calibri-normalization-manifest.json", proof), ("calibri-repair-manifest.json", manifest)):
         write_once(root / name, value)
@@ -213,7 +312,8 @@ def verify_repair(root, config):
     from hashlib import sha256
     items = verify_prepared(root, config)
     manifest = read_json(root / "calibri-repair-manifest.json")
-    require(manifest["protocol"] == PROTOCOL and manifest["max_repair_rounds"] == 1
+    require(manifest["protocol"] == config.prompt_version and manifest["protocol"] in (PROTOCOL, CHECKED_PROTOCOL)
+            and manifest["max_repair_rounds"] == 1
             and digest(items) == manifest["items_sha256"]
             and digest(read_json(root / "selection.json")) == manifest["selection_sha256"]
             and digest(read_json(root / "calibri-normalization-manifest.json")) == manifest["normalization_manifest_sha256"],
@@ -225,17 +325,28 @@ def verify_repair(root, config):
     parent = root / "parent-evidence"
     old_config = Config.load(parent / "run_config.json")
     require(old_config.prompt_version == "calibri-lcb-normalize-v2", "cannot repair another repair")
+    if config.prompt_version == CHECKED_PROTOCOL:
+        require(manifest["development_iteration"] == 2, "undeclared development revision")
+        for name, expected in manifest["history_files"].items():
+            require(not Path(name).is_absolute() and ".." not in Path(name).parts, "invalid history path")
+            require(sha256((root / "revision-history" / name).read_bytes()).hexdigest() == expected,
+                    "development history changed")
+        history_config = Config.load(root / "revision-history/run_config.json")
+        require(history_config.prompt_version == PROTOCOL, "cannot chain checked revisions")
+        verify_repair(root / "revision-history", history_config)
     for item in items:
         seed = read_json(root / "repair-seeds" / (item["item_id"] + ".json"))
         require(digest(seed) == manifest["seed_sha256"][item["item_id"]], "repair seed changed")
         expected_seed, _ = _failed_seed(parent, item, old_config)
+        if config.prompt_version == CHECKED_PROTOCOL:
+            expected_seed["development_feedback"] = _development_feedback(root / "revision-history", item)
         require(seed == expected_seed, "repair seed does not match its failed source")
     return items
 
 
 class CALIBRIRepairPipeline(Pipeline):
     def run(self, limit=None, progress=None, through="review_dag"):
-        require(self.config.prompt_version == PROTOCOL and through == "review_dag", "wrong repair protocol")
+        require(self.config.prompt_version in (PROTOCOL, CHECKED_PROTOCOL) and through == "review_dag", "wrong repair protocol")
         verify_repair(self.root, self.config)
         return super().run(limit, progress, through)
 
@@ -246,26 +357,27 @@ class CALIBRIRepairPipeline(Pipeline):
         seed = read_json(self.root / "repair-seeds" / (item["item_id"] + ".json"))
         data, stage = public_input(item), "repair"
         repair_input = {**data, **seed}
+        protocol = self.config.prompt_version
         try:
             proposal = self.request_stage(stage, item, repair_input, payload(stage, repair_input, self.config),
-                lambda v: apply_repair(v, seed["previous_normalized"], item))
-            normalized, record = apply_repair(proposal, seed["previous_normalized"], item)
+                lambda v: apply_versioned_repair(v, seed["previous_normalized"], item, protocol))
+            normalized, record = apply_versioned_repair(proposal, seed["previous_normalized"], item, protocol)
             write_once(directory / "normalization.json", normalized)
             write_once(directory / "repair-record.json", record)
             stage = "dependencies"
-            dependency_input = {**data, "normalized": normalized}
+            dependency_input = dependency_data(data, normalized, record)
             deps = self.request_stage(stage, item, dependency_input, payload(stage, dependency_input, self.config),
-                lambda v: assemble_graph(v, normalized, item))
-            graph = assemble_graph(deps, normalized, item)
+                lambda v: assemble_repaired_graph(v, normalized, item, record))
+            graph = assemble_repaired_graph(deps, normalized, item, record)
             stage = "review_dag"
             audit_input = {**data, "normalized": normalized, "candidate": graph,
                            "previous_normalized": seed["previous_normalized"], "repair_record": record}
             audit = self.request_stage(stage, item, audit_input, payload(stage, audit_input, self.config),
-                                       validate_repair_audit)
+                                       lambda v: validate_repair_audit(v, protocol))
             if audit["decision"] != "accept":
                 return self._finish(item, "rejected" if audit["decision"] == "reject" else "needs_review",
                                     stage, audit["reason"])
-            dag = {"schema_version": "reference_dag_v1", "construction_protocol": PROTOCOL,
+            dag = {"schema_version": "reference_dag_v1", "construction_protocol": protocol,
                    "item_id": item["item_id"], "source": item, "nodes": graph["nodes"],
                    "normalization": normalized, "repair_record": record,
                    "recovery_provenance": {"parent_seed_sha256": digest(seed), "repair_round": 1},
@@ -273,6 +385,8 @@ class CALIBRIRepairPipeline(Pipeline):
                    "calculation_check": {"status": "reference_tests_passed"}, "formal_eligible": False,
                    "quality_status": "model_reviewed_pending_release_audit",
                    "limitation": "Source-bound repaired explanation; unchanged tested code; same-model review, not native CoT or official/human gold"}
+            if protocol == CHECKED_PROTOCOL:
+                dag["recovery_provenance"]["development_iteration"] = 2
             write_once(directory / "dag.json", dag)
             return self._finish(item, "model_accepted", stage, "pending release audit", digest(dag))
         except InvalidOutput as error:
@@ -293,11 +407,14 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--max-calls", type=int, default=9)
     parser.add_argument("--max-reserved-tokens", type=int, default=1200000)
+    parser.add_argument("--prompt-version", choices=(PROTOCOL, CHECKED_PROTOCOL), default=PROTOCOL)
+    parser.add_argument("--history", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
     with run_lock(args.root):
         print(json.dumps(prepare_repair(args.parent, args.root, max_calls=args.max_calls,
-                                       max_reserved_tokens=args.max_reserved_tokens)))
+                                       max_reserved_tokens=args.max_reserved_tokens,
+                                       prompt_version=args.prompt_version, history=args.history)))
 
 
 if __name__ == "__main__":
