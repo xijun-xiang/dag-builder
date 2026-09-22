@@ -2,6 +2,7 @@
 
 import copy
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,9 @@ from dag_builder.stages import prompt
 from dag_builder.storage import digest, read_json, write_once
 from test_calibri_normalize import fixture
 from test_calibri_pipeline import config, setup
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from audit_calibri_repair import audit as offline_audit
 
 
 class Client:
@@ -118,6 +122,29 @@ class RepairContractTests(unittest.TestCase):
 
 
 class RepairPipelineTests(unittest.TestCase):
+    def test_offline_audit_replays_artifacts_and_detects_output_tampering(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder).resolve()
+            parent, outputs = failed_parent(folder)
+            run = folder / "repair"
+            prepare_repair(parent, run)
+            client = Client(repair_outputs(outputs), PROTOCOL)
+            CALIBRIRepairPipeline(run, config(prompt_version=PROTOCOL, max_calls=9), client).run()
+            write_once(run / "completion.json", {"status": "processed"})
+            # No executable code in this synthetic launcher fixture.
+            write_once(run / "code_origin.json", {"source_files": {}, "git_commit": "synthetic"})
+            report = offline_audit(run)
+            self.assertTrue(report["mechanical_pass"])
+            self.assertFalse(report["semantic_certification"])
+            self.assertEqual(report["requests"], 3)
+            self.assertEqual(report["cumulative_requests"], 5)
+            path = run / "items" / ("a" * 20) / "dag.json"
+            value = read_json(path)
+            value["nodes"][-1]["statement"] = "tampered program"
+            path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, "DAG does not match"):
+                offline_audit(run)
+
     def test_repair_is_three_calls_idempotent_and_not_a_release(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder).resolve()
