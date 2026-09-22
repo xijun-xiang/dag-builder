@@ -21,6 +21,9 @@ def pipeline_type(root, config):
     from dag_builder.repair_loop import RevisionPipeline
 
     if config.task_type == "livecodebench":
+        if config.prompt_version == "calibri-lcb-normalize-v1":
+            from dag_builder.calibri_pipeline import CALIBRIPipeline
+            return CALIBRIPipeline
         if config.prompt_version == "livecodebench-editorial-pilot-v1":
             from dag_builder.livecodebench_editorial import EditorialPilot
             return EditorialPilot

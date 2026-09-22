@@ -68,7 +68,7 @@ class Config:
             "gsm8k": ("gsm8k-v1",),
             "gpqa": ("gpqa-reference-v1", "gpqa-repair-v1", "gpqa-revision-v1"),
             "humaneval": ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"),
-            "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1", "livecodebench-editorial-pilot-v1"),
+            "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1", "livecodebench-editorial-pilot-v1", "calibri-lcb-normalize-v1"),
         }[self.task_type]
         if self.prompt_version not in versions:
             raise ValueError("prompt version does not match task_type")
@@ -98,9 +98,15 @@ class Config:
             "diagnostic_repair_generation",
             "reference_code_explanation",
             "editorial_grounded_pilot",
+            "calibri_reference_normalization",
         ):
             raise ValueError("unknown solution source")
-        if self.prompt_version == "livecodebench-editorial-pilot-v1":
+        if self.prompt_version == "calibri-lcb-normalize-v1":
+            if self.solution_source != "calibri_reference_normalization":
+                raise ValueError("CALIBRI requires explicit source-bound normalization")
+        elif self.solution_source == "calibri_reference_normalization":
+            raise ValueError("CALIBRI source requires its dedicated protocol")
+        elif self.prompt_version == "livecodebench-editorial-pilot-v1":
             if self.solution_source != "editorial_grounded_pilot":
                 raise ValueError("editorial pilot requires explicit editorial source")
         elif self.solution_source == "editorial_grounded_pilot":

@@ -38,7 +38,10 @@ def source_units(item):
 def public_input(item):
     """Allowlist only; never copy test bundles, filesystem paths or API keys."""
     from .schemas import public_question
-    return {"question": public_question(item), "source_units": source_units(item),
+    # Offsets/hashes stay in the local evidence; the model needs only lossless
+    # text and stable IDs. Repeating a source hash on every line wastes context.
+    units = [{k: u[k] for k in ("unit_id", "source_field", "text")} for u in source_units(item)]
+    return {"question": public_question(item), "source_units": units,
             "reference_code": item["reference_code"],
             "reference_execution": item["reference_execution"],
             "purpose": "derived reference explanation, not a preserved native generation trajectory"}
