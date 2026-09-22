@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import prepare_calibri_full_execution as preparation
+from audit_calibri_full_execution import expected_rows
 from dag_builder.livecodebench_source import REVISION, normalize_livecodebench
 from dag_builder.storage import digest, read_json, write_bytes_once, write_once
 from test_livecodebench import fixture
@@ -48,6 +49,13 @@ class FullExecutionTests(unittest.TestCase):
         self.assertEqual(len(manifest["not_executed"]), 174)
         self.assertEqual(manifest["calibri_manifest_sha256"], digest(self.manifest))
         self.assertFalse((self.root / "bundle/completion.json").exists())
+        originals, bundles = normalize_livecodebench([
+            json.loads(line) for line in self.source.read_text().splitlines()], REVISION)
+        self.assertEqual(expected_rows(self.items, originals, bundles),
+                         read_json(self.root / "bundle/execution-input.json"))
+        changed = dict(self.items[0], question='different')
+        with self.assertRaisesRegex(ValueError, 'pinned v6 source'):
+            expected_rows([changed], originals, bundles)
 
     def test_changed_source_or_candidate_cannot_prepare(self):
         self.source.write_bytes(self.source.read_bytes() + b"\n")

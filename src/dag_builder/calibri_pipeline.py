@@ -23,7 +23,7 @@ PROMPT_VERSIONS = (PROTOCOL, "calibri-lcb-normalize-v2")
 
 def prepare(source, execution, expected_manifest, root, *, max_calls=12,
             max_reserved_tokens=1200000, prior_calls=0, prior_reserved_tokens=0,
-            prompt_version=PROTOCOL):
+            prompt_version=PROTOCOL, development_run=None):
     """Bind source, actual execution and bounded allocation before paid calls."""
     source, execution, root = Path(source), Path(execution), private_dir(root)
     require(prompt_version in PROMPT_VERSIONS, "unknown normalization prompt")
@@ -44,6 +44,17 @@ def prepare(source, execution, expected_manifest, root, *, max_calls=12,
     require(execution_manifest["calibri_manifest_sha256"] == digest(manifest),
             "execution is not bound to this CALIBRI source")
     require(set(results) == {i["item_id"] for i in original_items}, "partial candidate execution")
+    development_items = {}
+    if development_run is not None:
+        from .config import Config
+        development_run = Path(development_run).resolve()
+        require(read_json(development_run / "completion.json")["status"] == "processed"
+                and not (development_run / "calibri-repair-manifest.json").exists(),
+                "development cohort must be a completed normalization run")
+        development_items = {i["item_id"]: i for i in verify_prepared(
+            development_run, Config.load(development_run / "run_config.json"))}
+        require(bool(development_items) and set(development_items) <= set(results),
+                "development cohort is outside full candidate cohort")
     items, exclusions = [], []
     for item in original_items:
         original, result = results[item["item_id"]]
@@ -59,6 +70,14 @@ def prepare(source, execution, expected_manifest, root, *, max_calls=12,
         require(inspect_row(raw, item)[n]["candidate"]
                 and raw["program"][n] == item["reference_code"] and raw["output"][n] == item["raw_output"],
                 "CALIBRI selected output changed")
+        if item["item_id"] in development_items:
+            require(all(development_items[item["item_id"]].get(k) == v for k, v in item.items()
+                        if k not in ("reference_execution", "execution_evidence")),
+                    "development cohort source differs from full candidate")
+            exclusions.append({"item_id": item["item_id"],
+                "reason": "development_cohort_already_processed_not_resampled",
+                "full_execution_status": result["status"]})
+            continue
         if result["status"] != "passed":
             exclusions.append({"item_id": item["item_id"], "reason": "reference_execution_not_passed"})
             continue
@@ -80,6 +99,12 @@ def prepare(source, execution, expected_manifest, root, *, max_calls=12,
              "max_calls": max_calls, "max_reserved_tokens": max_reserved_tokens,
              "prior_calls": prior_calls, "prior_reserved_tokens": prior_reserved_tokens,
              "formal_eligible": False}
+    if development_items:
+        development = {"items": list(development_items.values()),
+                       "normalization_manifest": read_json(development_run / "calibri-normalization-manifest.json"),
+                       "completion": read_json(development_run / "completion.json")}
+        write_once(root / "evidence/development-cohort.json", development)
+        proof["development_cohort_sha256"] = digest(development)
     write_once(root / "items.json", items)
     write_once(root / "selection.json", selection)
     write_once(root / "calibri-normalization-manifest.json", proof)
@@ -103,6 +128,14 @@ def verify_prepared(root, config):
             and config.max_reserved_tokens <= proof["max_reserved_tokens"]
             <= CAMPAIGN_TOKEN_LIMIT - proof["prior_reserved_tokens"], "shared allocation exceeded")
     evidence = root / "evidence"
+    if "development_cohort_sha256" in proof:
+        development = read_json(evidence / "development-cohort.json")
+        require(digest(development) == proof["development_cohort_sha256"]
+                and digest(development["items"]) == development["normalization_manifest"]["items_sha256"],
+                "development cohort evidence changed")
+        excluded_ids = {i["item_id"] for i in development["items"]}
+        require(not excluded_ids.intersection(i["item_id"] for i in items),
+                "development items must not be resampled")
     require(digest(read_json(evidence / "source-manifest.json")) == proof["source_manifest_sha256"]
             and sha256(evidence / "completion.json") == proof["execution_completion_sha256"]
             and sha256(evidence / "input-manifest.json") == proof["execution_manifest_sha256"],
@@ -191,13 +224,15 @@ def main():
     parser.add_argument("--prior-calls", type=int, default=0)
     parser.add_argument("--prior-reserved-tokens", type=int, default=0)
     parser.add_argument("--prompt-version", choices=PROMPT_VERSIONS, default=PROTOCOL)
+    parser.add_argument("--development-run", type=Path,
+                        help="Completed original development cohort to preserve separately, not resample")
     args = parser.parse_args()
     os.umask(0o077)
     with run_lock(args.root):
         print(json.dumps(prepare(args.source, args.execution, args.expected_manifest, args.root,
             max_calls=args.max_calls, max_reserved_tokens=args.max_reserved_tokens,
             prior_calls=args.prior_calls, prior_reserved_tokens=args.prior_reserved_tokens,
-            prompt_version=args.prompt_version)))
+            prompt_version=args.prompt_version, development_run=args.development_run)))
 
 
 if __name__ == "__main__":

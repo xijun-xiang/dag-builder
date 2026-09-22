@@ -19,6 +19,9 @@ from verify_livecodebench_reference import POLICY, file_hash, static_check
 
 
 def prepare(candidates, manifest_path, source_file, output):
+    # Fail before decoding/materializing large hidden-test inputs if deployment
+    # introduced extra or changed source files (for example AppleDouble files).
+    code_origin = implementation()
     items, manifest = read_json(candidates), read_json(manifest_path)
     require(manifest["protocol"] == "calibri-lcb-source-full-v1"
             and digest(items) == manifest["items_sha256"], "full candidate identity changed")
@@ -57,7 +60,7 @@ def prepare(candidates, manifest_path, source_file, output):
         "not_executed": [{"item_id": i["item_id"], "reason": "no_source_candidate"}
                          for i in originals if i["item_id"] not in {c["item_id"] for c in items}],
         "inputs_sha256": digest(rows), "harness_sha256": file_hash(harness),
-        "prepare_script_sha256": file_hash(__file__), "implementation": implementation(),
+        "prepare_script_sha256": file_hash(__file__), "implementation": code_origin,
         "comparison": "exact JSON equality / whitespace-normalized lines; no float tolerance",
         "claim": "pending isolated execution; not accepted DAGs or benchmark leaderboard scores"})
     return {"original_questions": len(originals), "candidates": len(items),
