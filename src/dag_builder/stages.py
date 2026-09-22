@@ -31,6 +31,8 @@ REVISION_STAGES = ("revise", "audit", "adjudicate")
 
 def stages_for(config):
     if config.task_type == "livecodebench":
+        if config.prompt_version == "calibri-lcb-repair-v1":
+            return ("repair", "dependencies", "review_dag")
         if config.prompt_version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2"):
             return ("normalize", "dependencies", "review_dag")
         if config.prompt_version == "livecodebench-editorial-pilot-v1":
@@ -52,10 +54,13 @@ def prompt(
         if not ((version == "livecodebench-reference-v1" and stage == "reference_code")
                 or (version == "livecodebench-dag-v1" and stage in STAGES)
                 or (version == "livecodebench-editorial-pilot-v1" and stage in ("atomize", "review_dag"))
+                or (version == "calibri-lcb-repair-v1" and stage in ("repair", "dependencies", "review_dag"))
                 or (version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2")
                     and stage in ("normalize", "dependencies", "review_dag"))):
             raise ValueError("unsupported LiveCodeBench stage or protocol")
         if version == "calibri-lcb-normalize-v2" and stage != "normalize":
+            version = "calibri-lcb-normalize-v1"
+        if version == "calibri-lcb-repair-v1" and stage == "dependencies":
             version = "calibri-lcb-normalize-v1"
         return files("dag_builder").joinpath("prompts", version, stage + ".md").read_text(encoding="utf-8")
     allowed = (
