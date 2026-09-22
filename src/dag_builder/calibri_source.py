@@ -156,7 +156,7 @@ def inspect_row(row, item):
     return samples
 
 
-def prepare(cache, source, output):
+def prepare(cache, source, output, *, full=False):
     """Audit both published models and keep the ORIGINAL five-question canary.
 
     Sampling is deterministic among passed, text-bearing candidates, never based
@@ -181,7 +181,8 @@ def prepare(cache, source, output):
     usable = {cfg: set() for cfg in found}
     seen = {cfg: set() for cfg in found}
     errors, index, row_counts = [], [], {cfg: 0 for cfg in found}
-    canary_ids = {i["question_id"] for i in frozen}
+    selected_source = originals if full else frozen
+    canary_ids = {i["question_id"] for i in selected_source}
     for name in FILES:
         cfg, filename = name.split("/")
         rows = read_rows(cache, name, columns)
@@ -218,7 +219,7 @@ def prepare(cache, source, output):
                                             "raw_output": row["output"][n]})
     require(all(n == 1055 for n in row_counts.values()), "partial CALIBRI release")
     items, missing = [], []
-    for item in frozen:
+    for item in selected_source:
         options = candidates[item["question_id"]]
         if not options:
             missing.append({"item_id": item["item_id"], "question_id": item["question_id"],
@@ -229,7 +230,8 @@ def prepare(cache, source, output):
         items.append({**item, **chosen, "reference_origin": "calibri_model_output",
                       "reference_execution": "upstream_pass_only_not_locally_executed",
                       "formal_eligible": False})
-    audit = {"protocol": "calibri-lcb-source-v2", "dataset": DATASET, "revision": REVISION,
+    audit = {"protocol": "calibri-lcb-source-full-v1" if full else "calibri-lcb-source-v2",
+             "dataset": DATASET, "revision": REVISION,
              "target_questions": len(originals), "models": {
                  cfg: {"source_rows": row_counts[cfg], "matched_questions": len(found[cfg]),
                        "upstream_passed_questions": len(passed[cfg]),
@@ -238,7 +240,8 @@ def prepare(cache, source, output):
              "union_upstream_passed_questions": len(set.union(*passed.values())),
              "union_text_bearing_candidate_questions": len(set.union(*usable.values())),
              "identity_or_schema_errors": errors, "original_canary_count": 5,
-             "selected_canary_count": len(items), "excluded_canary": missing,
+             ("selected_candidate_count" if full else "selected_canary_count"): len(items),
+             ("excluded_full_cohort" if full else "excluded_canary"): missing,
              "claim": "upstream labels and mechanical discovery, NOT local tests or semantic approval"}
     write_once(output / "candidate-index.json", index)
     write_once(output / "audit.json", audit)
@@ -246,7 +249,8 @@ def prepare(cache, source, output):
     write_once(output / "selection.json", {
         "seed": selection["seed"], "original_selected_ids": selection["selected_ids"],
         "selected_ids": [i["item_id"] for i in items], "excluded": missing,
-        "sampling": "original five, then minimum SHA256(seed,origin) among mechanical candidates",
+        "sampling": ("all 175, then minimum SHA256(seed,origin) among mechanical candidates" if full else
+                     "original five, then minimum SHA256(seed,origin) among mechanical candidates"),
         "no_score_selection": True, "no_replacement": True})
     write_once(output / "calibri-manifest.json", {
         "protocol": audit["protocol"], "dataset_revision": REVISION,
@@ -268,13 +272,14 @@ def main():
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--download", action="store_true", help="fetch only the six pinned public LCB files")
+    parser.add_argument("--full", action="store_true", help="account for all 175; keep deterministic pilot choices")
     args = parser.parse_args()
     os.umask(0o077)
     with run_lock(args.output):
         if args.download:
             for name in FILES:
                 fetch_file(args.cache, name)
-        print(json.dumps(prepare(args.cache, args.source, args.output), ensure_ascii=False))
+        print(json.dumps(prepare(args.cache, args.source, args.output, full=args.full), ensure_ascii=False))
 
 
 if __name__ == "__main__":

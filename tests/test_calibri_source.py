@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dag_builder import calibri_source as source
+from dag_builder.storage import digest, read_json, write_once
 
 
 def fixture():
@@ -23,6 +24,33 @@ def fixture():
 
 
 class CALIBRISourceTests(unittest.TestCase):
+    def test_full_selection_preserves_pilot_and_accounts_for_every_item(self):
+        item, row = fixture()
+        originals = [{**item, "item_id": f"{n:020x}", "question_id": f"q{n}"} for n in range(175)]
+        frozen = originals[:5]
+        selection = {"seed": 20260922, "selected_ids": [i["item_id"] for i in frozen]}
+        rows = [{**row, "id": f"q{n}", "model": "synthetic",
+                 "is_correct": [n != 2] * 10} for n in range(1055)]
+
+        def fake_rows(cache, name, columns):
+            return rows if "/train-" in name else []
+
+        with tempfile.TemporaryDirectory() as folder, patch.object(source, "read_rows", side_effect=fake_rows):
+            root = Path(folder).resolve()
+            write_once(root / "original/source/normalized.json", originals)
+            write_once(root / "original/items.json", frozen)
+            write_once(root / "original/selection.json", selection)
+            write_once(root / "original/prepared-manifest.json", {
+                "items_sha256": digest(frozen), "selection_sha256": digest(selection)})
+            source.prepare(root / "cache", root / "original", root / "pilot")
+            audit = source.prepare(root / "cache", root / "original", root / "full", full=True)
+            self.assertEqual(audit["selected_candidate_count"], 174)
+            self.assertEqual(len(audit["excluded_full_cohort"]), 1)
+            full = {i["item_id"]: i for i in read_json(root / "full/items.json")}
+            for chosen in read_json(root / "pilot/items.json"):
+                self.assertEqual(chosen, full[chosen["item_id"]])
+            self.assertEqual(len(list((root / "full/source-rows").glob("*/*.json"))), 350)
+
     def test_identity_and_aligned_labels(self):
         item, row = fixture()
         self.assertTrue(all(x["candidate"] for x in source.inspect_row(row, item)))

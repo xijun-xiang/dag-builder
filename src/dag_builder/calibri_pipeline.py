@@ -18,12 +18,15 @@ from .storage import digest, private_dir, read_json, write_bytes_once, write_onc
 
 CAMPAIGN_CALL_LIMIT = 600
 CAMPAIGN_TOKEN_LIMIT = 25000000
+PROMPT_VERSIONS = (PROTOCOL, "calibri-lcb-normalize-v2")
 
 
 def prepare(source, execution, expected_manifest, root, *, max_calls=12,
-            max_reserved_tokens=1200000, prior_calls=0, prior_reserved_tokens=0):
+            max_reserved_tokens=1200000, prior_calls=0, prior_reserved_tokens=0,
+            prompt_version=PROTOCOL):
     """Bind source, actual execution and bounded allocation before paid calls."""
     source, execution, root = Path(source), Path(execution), private_dir(root)
+    require(prompt_version in PROMPT_VERSIONS, "unknown normalization prompt")
     require(type(max_calls) is int and type(prior_calls) is int
             and 0 < max_calls <= CAMPAIGN_CALL_LIMIT - prior_calls and prior_calls >= 0,
             "campaign call allocation exceeded")
@@ -70,7 +73,7 @@ def prepare(source, execution, expected_manifest, root, *, max_calls=12,
                  "candidate_count": len(original_items), "excluded": exclusions,
                  "source_selection": old_selection,
                  "sampling": "all frozen candidates passing isolated tests; no score-based selection"}
-    proof = {"protocol": PROTOCOL, "source_manifest_sha256": digest(manifest),
+    proof = {"protocol": PROTOCOL, "prompt_version": prompt_version, "source_manifest_sha256": digest(manifest),
              "items_sha256": digest(items), "selection_sha256": digest(selection),
              "execution_completion_sha256": sha256(execution / "completion.json"),
              "execution_manifest_sha256": sha256(expected_manifest),
@@ -95,6 +98,7 @@ def verify_prepared(root, config):
     items, selection = read_json(root / "items.json"), read_json(root / "selection.json")
     require(proof["protocol"] == PROTOCOL and digest(items) == proof["items_sha256"]
             and digest(selection) == proof["selection_sha256"], "frozen normalization input changed")
+    require(config.prompt_version == proof.get("prompt_version", PROTOCOL), "prepared prompt version changed")
     require(config.max_calls <= proof["max_calls"] <= CAMPAIGN_CALL_LIMIT - proof["prior_calls"]
             and config.max_reserved_tokens <= proof["max_reserved_tokens"]
             <= CAMPAIGN_TOKEN_LIMIT - proof["prior_reserved_tokens"], "shared allocation exceeded")
@@ -130,7 +134,7 @@ def verify_prepared(root, config):
 
 class CALIBRIPipeline(Pipeline):
     def run(self, limit=None, progress=None, through="review_dag"):
-        require(self.config.prompt_version == PROTOCOL and self.config.task_type == "livecodebench"
+        require(self.config.prompt_version in PROMPT_VERSIONS and self.config.task_type == "livecodebench"
                 and through == "review_dag", "wrong CALIBRI protocol")
         verify_prepared(self.root, self.config)
         return super().run(limit, progress, through)
@@ -157,7 +161,7 @@ class CALIBRIPipeline(Pipeline):
             if audit["decision"] != "accept":
                 return self._finish(item, "rejected" if audit["decision"] == "reject" else "needs_review",
                                     stage, audit["reason"])
-            dag = {"schema_version": "reference_dag_v1", "construction_protocol": PROTOCOL,
+            dag = {"schema_version": "reference_dag_v1", "construction_protocol": self.config.prompt_version,
                    "item_id": item["item_id"], "source": item, "nodes": graph["nodes"],
                    "normalization": normalized, "dag_review": audit,
                    "execution_evidence": item["execution_evidence"],
@@ -186,12 +190,14 @@ def main():
     parser.add_argument("--max-reserved-tokens", type=int, default=1200000)
     parser.add_argument("--prior-calls", type=int, default=0)
     parser.add_argument("--prior-reserved-tokens", type=int, default=0)
+    parser.add_argument("--prompt-version", choices=PROMPT_VERSIONS, default=PROTOCOL)
     args = parser.parse_args()
     os.umask(0o077)
     with run_lock(args.root):
         print(json.dumps(prepare(args.source, args.execution, args.expected_manifest, args.root,
             max_calls=args.max_calls, max_reserved_tokens=args.max_reserved_tokens,
-            prior_calls=args.prior_calls, prior_reserved_tokens=args.prior_reserved_tokens)))
+            prior_calls=args.prior_calls, prior_reserved_tokens=args.prior_reserved_tokens,
+            prompt_version=args.prompt_version)))
 
 
 if __name__ == "__main__":

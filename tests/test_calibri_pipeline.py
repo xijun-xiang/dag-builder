@@ -128,6 +128,17 @@ class CALIBRIPipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "raw CALIBRI"):
                 prepare(source, execution, execution / "input-manifest.json", source.parent / "bad")
 
+    def test_v2_changes_prompt_not_validation_or_shared_stage_prompts(self):
+        v2 = "calibri-lcb-normalize-v2"
+        config(prompt_version=v2)
+        self.assertNotEqual(prompt("normalize", PROTOCOL, "livecodebench"), prompt("normalize", v2, "livecodebench"))
+        for stage in ("dependencies", "review_dag"):
+            self.assertEqual(prompt(stage, PROTOCOL, "livecodebench"), prompt(stage, v2, "livecodebench"))
+        with tempfile.TemporaryDirectory() as folder:
+            _, _, run, outputs = setup(Path(folder).resolve())
+            with self.assertRaisesRegex(ValueError, "prompt version changed"):
+                CALIBRIPipeline(run, config(prompt_version=v2), Client(outputs)).run()
+
     def test_invalid_normalization_stops_at_first_stage(self):
         with tempfile.TemporaryDirectory() as folder:
             _, _, run, outputs = setup(Path(folder).resolve())
