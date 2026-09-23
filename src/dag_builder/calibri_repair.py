@@ -217,9 +217,12 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
             "first pass requires checked protocol without revision history")
     checked_revision = prompt_version == CHECKED_PROTOCOL and not first_pass
     old_config = Config.load(parent / "run_config.json")
-    require(old_config.prompt_version == "calibri-lcb-normalize-v2"
+    require(old_config.prompt_version in ("calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3")
             and not (parent / "calibri-repair-manifest.json").exists(), "one repair pass only, from v2")
     require(read_json(parent / "completion.json")["status"] == "processed", "parent must have completed")
+    if old_config.prompt_version == "calibri-lcb-normalize-v3":
+        from .calibri_continuation import audit_completed
+        require(audit_completed(parent)["mechanical_pass"], "continuation audit failed")
     original_items = verify_prepared(parent, old_config)
     old_proof = read_json(parent / "calibri-normalization-manifest.json")
     history_files, history_items, history_results = {}, {}, {}
@@ -285,6 +288,9 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
                               "all v2 dependency-stage failures, one repair each; no PALS-based selection")}
     for name in ("items.json", "selection.json", "run_config.json", "completion.json", "calibri-normalization-manifest.json"):
         files[name] = (parent / name).read_bytes()
+    if old_config.prompt_version == "calibri-lcb-normalize-v3":
+        files["offline-continuation-audit.json"] = (parent / "offline-continuation-audit.json").read_bytes()
+        files["calibri-continuation-manifest.json"] = (parent / "calibri-continuation-manifest.json").read_bytes()
     proof = {**old_proof, "prompt_version": prompt_version, "items_sha256": digest(items),
              "selection_sha256": digest(selection), "max_calls": max_calls, "max_reserved_tokens": max_reserved_tokens,
              "prior_calls": prior_calls, "prior_reserved_tokens": prior_reserved}
@@ -330,7 +336,8 @@ def verify_repair(root, config):
                 "parent repair evidence changed")
     parent = root / "parent-evidence"
     old_config = Config.load(parent / "run_config.json")
-    require(old_config.prompt_version == "calibri-lcb-normalize-v2", "cannot repair another repair")
+    require(old_config.prompt_version in ("calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3"),
+            "cannot repair another repair")
     first_pass = manifest.get("repair_mode") == "checked_first_pass"
     require(manifest.get("repair_mode") in (None, "checked_first_pass"), "unknown repair mode")
     if first_pass:

@@ -18,7 +18,7 @@ from .storage import digest, private_dir, read_json, write_bytes_once, write_onc
 
 CAMPAIGN_CALL_LIMIT = 600
 CAMPAIGN_TOKEN_LIMIT = 25000000
-PROMPT_VERSIONS = (PROTOCOL, "calibri-lcb-normalize-v2")
+PROMPT_VERSIONS = (PROTOCOL, "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3")
 
 
 def prepare(source, execution, expected_manifest, root, *, max_calls=12,
@@ -170,6 +170,9 @@ class CALIBRIPipeline(Pipeline):
         require(self.config.prompt_version in PROMPT_VERSIONS and self.config.task_type == "livecodebench"
                 and through == "review_dag", "wrong CALIBRI protocol")
         verify_prepared(self.root, self.config)
+        if (self.root / "calibri-continuation-manifest.json").exists():
+            from .calibri_continuation import verify_continuation
+            verify_continuation(self.root, self.config)
         return super().run(limit, progress, through)
 
     def process(self, item, through="review_dag"):
@@ -201,6 +204,13 @@ class CALIBRIPipeline(Pipeline):
                    "calculation_check": {"status": "reference_tests_passed"},
                    "formal_eligible": False, "quality_status": "model_reviewed_pending_release_audit",
                    "limitation": "CALIBRI-derived explanation; frozen code tested; same-model semantic review, not native CoT or official/human gold"}
+            if (self.root / "calibri-continuation-manifest.json").exists():
+                continuation = read_json(self.root / "calibri-continuation-manifest.json")
+                dag["recovery_provenance"] = {
+                    "continuation_protocol": continuation["protocol"],
+                    "parent_evidence_sha256": continuation["parent_evidence_sha256"],
+                    "mode": continuation["actions"][item["item_id"]],
+                }
             write_once(directory / "dag.json", dag)
             return self._finish(item, "model_accepted", stage, "pending release audit", digest(dag))
         except InvalidOutput as error:

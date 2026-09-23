@@ -178,6 +178,10 @@ class Pipeline:
             + request_payload["max_tokens"]
         )
         with self._budget_lock:
+            # An operator can ask a detached worker to drain current calls.
+            # The flag lives in the private run directory and is immutable.
+            if (self.root / "operator-stop-request.json").exists():
+                self._stop.set()
             if self._stop.is_set():
                 raise CallFailure("paused")
             if (
