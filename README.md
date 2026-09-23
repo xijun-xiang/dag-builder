@@ -13,7 +13,7 @@
 [2026-09-22 正式实验结果索引](docs/PALS_RESULTS_20260922.md)记录 GPQA/HumanEval
 三模型的已验收主结果、有效样本分母、协议差异及私有产物定位；保留负向和不确定结果。
 
-[GPQA/HumanEval 冻结数据格式](docs/gpqa-humaneval-frozen-data-schema.md)逐字段说明正式使用的 JSONL 与 HTML、两套导出协议的差异，以及 GPQA 三条诊断接受记录的读取方式。
+[PALS 最终 DAG 数据统一格式 v1](docs/pals-dag-unified-v1.md)固定今后各 benchmark 的交付字段、节点/边和来源哈希，并提供 JSON Schema 与导出器。[GPQA/HumanEval 历史冻结格式](docs/gpqa-humaneval-frozen-data-schema.md)说明已经运行的两套 JSONL 和 HTML 如何读取。
 
 [LiveCodeBench v6 接入进度与协议](docs/livecodebench-validation.md)：固定第六批
 175 题、私有测试隔离、5 题 score-blind canary；未验收前不标为正式实验完成。

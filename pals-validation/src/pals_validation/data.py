@@ -34,6 +34,9 @@ def ancestors(nodes, target):
 
 
 def normalize(record, benchmark="gpqa"):
+    if record.get("schema_version") == "pals_dag_unified_v1":
+        from .unified import normalize_unified
+        return normalize_unified(record, benchmark)
     if benchmark == "humaneval":
         from .humaneval import normalize_humaneval
         return normalize_humaneval(record)
