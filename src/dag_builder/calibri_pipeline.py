@@ -117,16 +117,19 @@ def prepare(source, execution, expected_manifest, root, *, max_calls=12,
     return selection
 
 
-def verify_prepared(root, config):
+def verify_prepared(root, config, *, campaign_token_limit=CAMPAIGN_TOKEN_LIMIT):
     """Cheap repeatable proof check, before a single request or resumed call."""
     proof = read_json(root / "calibri-normalization-manifest.json")
     items, selection = read_json(root / "items.json"), read_json(root / "selection.json")
     require(proof["protocol"] == PROTOCOL and digest(items) == proof["items_sha256"]
             and digest(selection) == proof["selection_sha256"], "frozen normalization input changed")
     require(config.prompt_version == proof.get("prompt_version", PROTOCOL), "prepared prompt version changed")
+    require(type(campaign_token_limit) is int
+            and campaign_token_limit == proof.get("campaign_token_limit", CAMPAIGN_TOKEN_LIMIT),
+            "prepared campaign limit changed")
     require(config.max_calls <= proof["max_calls"] <= CAMPAIGN_CALL_LIMIT - proof["prior_calls"]
             and config.max_reserved_tokens <= proof["max_reserved_tokens"]
-            <= CAMPAIGN_TOKEN_LIMIT - proof["prior_reserved_tokens"], "shared allocation exceeded")
+            <= campaign_token_limit - proof["prior_reserved_tokens"], "shared allocation exceeded")
     evidence = root / "evidence"
     if "development_cohort_sha256" in proof:
         development = read_json(evidence / "development-cohort.json")

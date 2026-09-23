@@ -374,7 +374,8 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
         files["calibri-continuation-manifest.json"] = (parent / "calibri-continuation-manifest.json").read_bytes()
     proof = {**old_proof, "prompt_version": prompt_version, "items_sha256": digest(items),
              "selection_sha256": digest(selection), "max_calls": max_calls, "max_reserved_tokens": max_reserved_tokens,
-             "prior_calls": prior_calls, "prior_reserved_tokens": prior_reserved}
+             "prior_calls": prior_calls, "prior_reserved_tokens": prior_reserved,
+             "campaign_token_limit": campaign_token_limit}
     for path in (parent / "evidence").rglob("*"):
         if path.is_file():
             write_bytes_once(root / path.relative_to(parent), path.read_bytes())
@@ -414,8 +415,10 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
 
 
 def verify_repair(root, config):
-    items = verify_prepared(root, config)
     manifest = read_json(root / "calibri-repair-manifest.json")
+    recovery = manifest.get("transport_recovery")
+    limit = recovery["campaign_token_limit"] if recovery is not None else CAMPAIGN_TOKEN_LIMIT
+    items = verify_prepared(root, config, campaign_token_limit=limit)
     require(manifest["protocol"] == config.prompt_version and manifest["protocol"] in (PROTOCOL, CHECKED_PROTOCOL)
             and manifest["max_repair_rounds"] == 1
             and digest(items) == manifest["items_sha256"]
@@ -436,7 +439,6 @@ def verify_repair(root, config):
         require(config.prompt_version == CHECKED_PROTOCOL
                 and "development_iteration" not in manifest and "history_files" not in manifest
                 and not (root / "revision-history").exists(), "mixed first-pass and revision evidence")
-    recovery = manifest.get("transport_recovery")
     if recovery is not None:
         require(first_pass and recovery["protocol"] == DNS_RECOVERY_PROTOCOL
                 and recovery["campaign_token_limit"] == DNS_RECOVERY_TOKEN_LIMIT,
