@@ -67,7 +67,9 @@ def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     for name, payload in payloads.items():
         save(output / name, payload)
-    manifest = {"protocol": VERSION if benchmark == "gpqa" else "humaneval-validation-v1",
+    protocols = {"gpqa": VERSION, "humaneval": "humaneval-validation-v1",
+                 "livecodebench": "livecodebench-validation-v1"}
+    manifest = {"protocol": protocols[benchmark],
                 "source_sha256": source_hash, "selection_seed": seed,
                 "parent_probe": parent_probe, "e2_policy": "one_hash_selected_target_ancestor_prefix",
                 "question_choices": "always_included_in_v1" if benchmark == "gpqa" else "not_applicable_original_code_prompt",

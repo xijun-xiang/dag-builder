@@ -52,8 +52,8 @@ def _candidate_nodes(candidate):
 
 
 def convert_record(record, benchmark, source_file_sha256):
-    """Convert one frozen accepted GPQA or HumanEval record without modifying it."""
-    _require(benchmark in ("gpqa_diamond", "humaneval"), "unsupported benchmark")
+    """Convert one frozen, model-accepted record without modifying its evidence."""
+    _require(benchmark in ("gpqa_diamond", "humaneval", "livecodebench_v6"), "unsupported benchmark")
     _require(_sha256(source_file_sha256), "source file SHA256 required")
     _require(isinstance(record, dict) and record.get("model_accepted") is True,
              "only model-accepted source records can be exported")
@@ -83,7 +83,7 @@ def convert_record(record, benchmark, source_file_sha256):
         problem = {"question": source["question"], "domain": source["domain"],
                    "choices": choices, "entry_point": None}
         answer = {"kind": "choice", "value": answer}
-    else:
+    elif benchmark == "humaneval":
         _require(record.get("schema_version") == "humaneval_validation_export_v1"
                  and record.get("status") == "model_accepted"
                  and source.get("subset") == "humaneval"
@@ -97,6 +97,38 @@ def convert_record(record, benchmark, source_file_sha256):
                    "entry_point": source["entry_point"]}
         answer = {"kind": "code", "value": source["canonical_solution"]}
         _require(nodes[-1]["statement"] == answer["value"], "HumanEval answer/code mismatch")
+    else:
+        _require(record.get("schema_version") == "calibri-lcb-v6-model-candidates-v1"
+                 and record.get("status", "model_accepted") == "model_accepted"
+                 and record.get("source_status") == "calibri_derived_tested_reference"
+                 and record.get("human_approved") is False
+                 and record.get("formal_eligible") is False
+                 and source.get("subset") == "v6"
+                 and source.get("task_type") == "livecodebench", "LCB source contract mismatch")
+        _require(isinstance(source_dag, dict) and source_dag.get("source") == source
+                 and source_dag.get("item_id") == item_id
+                 and source_dag.get("formal_eligible") is False
+                 and digest(source_dag) == record.get("dag_sha256")
+                 and _sha256(record.get("cpu_result_sha256")), "LCB DAG/CPU provenance mismatch")
+        _require(source.get("execution_evidence", {}).get("status") == "passed"
+                 and source["execution_evidence"].get("result_sha256") == record["cpu_result_sha256"]
+                 and source.get("io_type") in ("stdin", "functional")
+                 and ((source.get("entry_point") is None) if source["io_type"] == "stdin"
+                      else _text(source.get("entry_point"))), "LCB execution or I/O contract mismatch")
+        starter = source.get("starter_code")
+        _require(isinstance(starter, str)
+                 and (not starter.strip() if source["io_type"] == "stdin" else bool(starter.strip())),
+                 "LCB starter code/I/O mismatch")
+        nodes = deepcopy(source_dag["nodes"])
+        source_id = source["question_id"]
+        # The construction model saw starter_code as a separate public field;
+        # the unified PALS question must preserve that visible context.
+        visible_question = source["question"] + ("\n\nStarter code:\n" + starter if starter else "")
+        problem = {"question": visible_question, "domain": source["domain"],
+                   "choices": None, "entry_point": source["entry_point"]}
+        # This is a CPU-tested CALIBRI-derived reference program, not official gold.
+        answer = {"kind": "code", "value": source["reference_code"]}
+        _require(nodes[-1]["statement"] == answer["value"], "LCB answer/code mismatch")
 
     _require(_text(source_id) and _text(problem["question"]), "missing source ID or question")
     _require(_sha256(source.get("source_content_sha256")), "invalid source content hash")
@@ -110,7 +142,8 @@ def convert_record(record, benchmark, source_file_sha256):
         "answer": answer,
         "dag": {"schema_version": GRAPH_VERSION, "nodes": canonical_nodes,
                 "nodes_sha256": digest(canonical_nodes)},
-        "review": {"source_status": record["status"], "model_accepted": True,
+        "review": {"source_status": record["source_status"] if benchmark == "livecodebench_v6"
+                   else record["status"], "model_accepted": True,
                    "human_approved": record.get("human_approved") is True,
                    "quality_status": source_dag.get("quality_status") if source_dag else None,
                    "construction_protocol": source_dag.get("construction_protocol") if source_dag else None},
@@ -146,7 +179,9 @@ def validate_row(row):
         _require(isinstance(problem["choices"], list) and len(problem["choices"]) == 4
                  and answer["value"] in ("A", "B", "C", "D"), "invalid choice answer")
     if answer["kind"] == "code":
-        _require(_text(problem["entry_point"]) and problem["choices"] is None,
+        _require(problem["choices"] is None
+                 and (problem["entry_point"] is None or _text(problem["entry_point"]))
+                 and (row["benchmark"] == "livecodebench_v6" or _text(problem["entry_point"])),
                  "invalid code answer")
     _require(set(graph) == {"schema_version", "nodes", "nodes_sha256"}
              and graph["schema_version"] == GRAPH_VERSION, "DAG fields mismatch")

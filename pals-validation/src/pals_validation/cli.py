@@ -9,7 +9,7 @@ from .analyze import analyze
 
 def main():
     os.umask(0o077)
-    parser = argparse.ArgumentParser(description="Frozen GPQA/HumanEval PALS E1/E2 validation")
+    parser = argparse.ArgumentParser(description="Frozen GPQA/HumanEval/LiveCodeBench PALS E1/E2 validation")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("prepare")
     p.add_argument("--source", required=True)
@@ -17,7 +17,7 @@ def main():
     p.add_argument("--seed", type=int, default=20260915)
     p.add_argument("--expected-sha256")
     p.add_argument("--parent-probe", action="store_true")
-    p.add_argument("--benchmark", choices=("gpqa", "humaneval"), default="gpqa")
+    p.add_argument("--benchmark", choices=("gpqa", "humaneval", "livecodebench"), default="gpqa")
     p = commands.add_parser("init")
     p.add_argument("--prepared", required=True)
     p.add_argument("--config", required=True)

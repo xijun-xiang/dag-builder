@@ -6,7 +6,8 @@ from .io import digest
 def normalize_unified(record, benchmark):
     from .data import validated_steps
 
-    expected = {"gpqa": "gpqa_diamond", "humaneval": "humaneval"}.get(benchmark)
+    expected = {"gpqa": "gpqa_diamond", "humaneval": "humaneval",
+                "livecodebench": "livecodebench_v6"}.get(benchmark)
     if expected is None or record.get("schema_version") != "pals_dag_unified_v1":
         raise ValueError("Unknown unified benchmark or schema version")
     if set(record) != {"schema_version", "item_id", "benchmark", "problem", "answer",
@@ -16,7 +17,7 @@ def normalize_unified(record, benchmark):
     review, source = record["review"], record["provenance"]
     if (review.get("model_accepted") is not True or type(review.get("human_approved")) is not bool
             or not isinstance(review.get("source_status"), str)
-            or source.get("subset") != expected
+            or source.get("subset") != ("v6" if benchmark == "livecodebench" else expected)
             or not isinstance(source.get("source_row"), int)
             or type(source["source_row"]) is bool
             or source["source_row"] < 0):
@@ -28,7 +29,7 @@ def normalize_unified(record, benchmark):
     if any(set(node) != {"node_id", "kind", "statement", "parents",
                              "source_field", "source_quote", "justification"} for node in nodes):
         raise ValueError("Unified node fields mismatch")
-    steps = validated_steps(nodes, minimum=1 if benchmark == "humaneval" else 2)
+    steps = validated_steps(nodes, minimum=1 if benchmark in ("humaneval", "livecodebench") else 2)
     if not isinstance(problem.get("question"), str) or not problem["question"].strip():
         raise ValueError("Missing question")
     if benchmark == "gpqa":
@@ -49,8 +50,24 @@ def normalize_unified(record, benchmark):
                 "adapter": "pals_dag_unified_v1", "human_approved": review["human_approved"]}
     if (answer.get("kind") != "code" or not isinstance(answer.get("value"), str)
             or nodes[-1]["statement"] != answer["value"]
-            or problem.get("choices") is not None
-            or not isinstance(problem.get("entry_point"), str)
+            or problem.get("choices") is not None):
+        raise ValueError("Invalid unified code problem")
+    if benchmark == "livecodebench":
+        entry = problem.get("entry_point")
+        if (not isinstance(source.get("source_id"), str) or not source["source_id"].strip()
+                or not isinstance(source.get("source_dag_sha256"), str)
+                or len(source["source_dag_sha256"]) != 64
+                or (entry is not None and (not isinstance(entry, str) or not entry.isidentifier()))):
+            raise ValueError("Invalid unified LiveCodeBench problem")
+        return {"item_id": record["item_id"], "task_id": source["source_id"],
+                "task_type": "livecodebench", "io_type": "stdin" if entry is None else "functional",
+                "source_row": source["source_row"], "domain": problem["domain"],
+                "question": problem["question"], "entry_point": entry,
+                "steps": [{key: node[key] for key in ("node_id", "kind", "statement", "parents")}
+                          for node in steps], "adapter": "pals_dag_unified_v1",
+                "source_dag_sha256": source["source_dag_sha256"],
+                "human_approved": review["human_approved"]}
+    if (not isinstance(problem.get("entry_point"), str)
             or not problem["entry_point"].isidentifier()
             or not isinstance(source.get("source_id"), str)
             or not source["source_id"].startswith("HumanEval/")):

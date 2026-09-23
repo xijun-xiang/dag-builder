@@ -61,6 +61,29 @@ def humaneval():
             "status": "model_accepted", "model_accepted": True, "human_approved": False}
 
 
+def livecodebench(io_type="stdin"):
+    entry_point = "solve" if io_type == "functional" else None
+    source = {"item_id": "lcb-fixture", "question_id": "fixture-0", "dataset": "livecodebench/code_generation_lite",
+              "subset": "v6", "split": "test", "revision": "fixture-v1", "row": 0,
+              "task_type": "livecodebench", "io_type": io_type, "entry_point": entry_point,
+              "domain": "code", "question": "Compute the result.",
+              "starter_code": "def solve(x):\n    pass\n" if io_type == "functional" else "",
+              "reference_code": "print(1)\n",
+              "source_content_sha256": "d" * 64,
+              "execution_evidence": {"status": "passed", "result_sha256": "e" * 64}}
+    graph_nodes = nodes(code=True)
+    graph_nodes[-1]["statement"] = source["reference_code"]
+    graph_nodes[-1]["source_quote"] = source["reference_code"]
+    dag = {"item_id": source["item_id"], "source": source, "nodes": graph_nodes,
+           "formal_eligible": False, "quality_status": "model_reviewed",
+           "construction_protocol": "calibri-lcb-normalize-v3"}
+    return {"schema_version": "calibri-lcb-v6-model-candidates-v1", "item_id": source["item_id"],
+            "question_id": source["question_id"], "source": source, "dag": dag,
+            "dag_sha256": digest(dag), "cpu_result_sha256": "e" * 64,
+            "model_accepted": True, "human_approved": False, "formal_eligible": False,
+            "source_status": "calibri_derived_tested_reference"}
+
+
 class UnifiedTests(unittest.TestCase):
     def test_machine_schema_matches_exporter_keys(self):
         schema_path = Path(__file__).resolve().parents[1] / "schemas/pals-dag-unified-v1.schema.json"
@@ -76,6 +99,48 @@ class UnifiedTests(unittest.TestCase):
             self.assertEqual(set(row["dag"]["nodes"][0]), set(row["dag"]["nodes"][1]))
             validate_row(row)
         self.assertEqual(convert_record(humaneval(), "humaneval", SOURCE_HASH)["problem"]["choices"], None)
+
+    def test_livecodebench_stdin_and_functional_use_same_schema(self):
+        for io_type in ("stdin", "functional"):
+            source = livecodebench(io_type)
+            row = convert_record(source, "livecodebench_v6", SOURCE_HASH)
+            validate_row(row)
+            self.assertEqual(row["problem"]["entry_point"], source["source"]["entry_point"])
+            self.assertEqual("Starter code:" in row["problem"]["question"], io_type == "functional")
+            self.assertEqual(row["answer"], {"kind": "code", "value": "print(1)\n"})
+            self.assertFalse(row["review"]["human_approved"])
+            self.assertEqual(set(row["dag"]["nodes"][0]), set(nodes()[0]))
+
+    def test_livecodebench_rejects_unpassed_or_tampered_source(self):
+        source = livecodebench()
+        source["source"]["execution_evidence"]["status"] = "failed"
+        source["dag"]["source"] = source["source"]
+        source["dag_sha256"] = digest(source["dag"])
+        with self.assertRaisesRegex(ValueError, "execution"):
+            convert_record(source, "livecodebench_v6", SOURCE_HASH)
+        source = livecodebench()
+        source["dag"]["nodes"][-1]["statement"] = "print(2)\n"
+        source["dag_sha256"] = digest(source["dag"])
+        with self.assertRaisesRegex(ValueError, "answer/code"):
+            convert_record(source, "livecodebench_v6", SOURCE_HASH)
+        source = livecodebench()
+        source["cpu_result_sha256"] = "f" * 64
+        with self.assertRaisesRegex(ValueError, "execution"):
+            convert_record(source, "livecodebench_v6", SOURCE_HASH)
+
+    def test_livecodebench_release_has_unified_jsonl_and_viewer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "accepted_candidates.jsonl"
+            payload = (json.dumps(livecodebench(), ensure_ascii=False) + "\n").encode("utf-8")
+            source.write_bytes(payload)
+            manifest = convert_file(source, "livecodebench_v6",
+                                    hashlib.sha256(payload).hexdigest(), root / "unified")
+            self.assertEqual(manifest["records"], 1)
+            row = json.loads((root / "unified/pals_dag_unified_v1.jsonl").read_text())
+            self.assertEqual(row["review"]["source_status"], "calibri_derived_tested_reference")
+            self.assertEqual(row["benchmark"], "livecodebench_v6")
+            self.assertIn('id="cohort-data"', (root / "unified/pals_dag_unified_v1.html").read_text())
 
     def test_diagnostic_graph_keeps_its_original_review_status(self):
         row = convert_record(gpqa(diagnostic=True), "gpqa_diamond", SOURCE_HASH)

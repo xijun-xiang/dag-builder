@@ -49,7 +49,7 @@
 }
 ```
 
-上例展示字段形状，不是可直接验哈希的真实数据行。HumanEval 使用相同结构：`benchmark="humaneval"`，`problem.choices=null`，`problem.entry_point` 为函数名，`answer={"kind":"code","value":"官方 completion"}`。将来接入其他 benchmark 时须仍输出同一组字段；需要新字段时发布 v2，不在 v1 中悄悄加字段。
+上例展示字段形状，不是可直接验哈希的真实数据行。HumanEval 使用相同结构：`benchmark="humaneval"`，`problem.choices=null`，`problem.entry_point` 为函数名，`answer={"kind":"code","value":"官方 completion"}`。LiveCodeBench v6 同样使用这组字段：`benchmark="livecodebench_v6"`；functional 题保留函数入口，并在 `problem.question` 后附上原始 `starter_code` 供 PALS 看见完整公开上下文；stdin 题的 `problem.entry_point=null` 且无 starter code。`answer.value` 是经固定 CPU 测试通过的 CALIBRI 派生参考程序，**不是官方 gold**。将来接入其他 benchmark 时须仍输出同一组字段；需要新字段时发布 v2，不在 v1 中悄悄加字段。
 
 ### 字段语义与约束
 
@@ -82,9 +82,9 @@ python scripts/export_pals_dag_unified_v1.py \
 
 加入 `--output-dir /absolute/private/new-directory` 才会新建 `pals_dag_unified_v1.jsonl`、`pals_dag_unified_v1.html` 和 `manifest.json`；输出目录必须尚不存在，不覆盖历史冻结文件。两个 benchmark 的 HTML 都在 `<script id="cohort-data" type="application/json">` 中使用同一个包装：`{"schema_version":"pals_dag_unified_view_v1","benchmark":"...","rows":[...]}`，其中 `rows` 与 JSONL 逐对象相等。查看器只负责呈现，不是 PALS 的输入。GPQA 115 条完整 DAG 直接保留节点，3 条 `model_accepted_diagnostic` 按节点 ID 接回 `candidate.parents` 和 `candidate.justifications`；在统一记录中 `review.source_status` 仍明确标为诊断接受，`provenance.source_dag_sha256=null`。HumanEval 79 条在导出前检查原 DAG 哈希和终端代码答案。
 
-现有 PALS `prepare --benchmark gpqa` 或 `--benchmark humaneval` 会按行级 `schema_version` 识别新格式，并继续生成各自的 `cases.json`、`jobs.json`、`selection.json`、`inventory.json`。它也继续接受对应历史格式，既有实验无需重跑。预处理器校验新格式的图哈希和结构；来源文件应再用 `--expected-sha256` 固定。新格式不会把旧格式里的全部审核详情复制进去，因此独立复核模型审查仍需原冻结文件。
+现有 PALS `prepare --benchmark gpqa`、`--benchmark humaneval` 或 `--benchmark livecodebench` 会按行级 `schema_version` 识别新格式，并继续生成各自的 `cases.json`、`jobs.json`、`selection.json`、`inventory.json`。它也继续接受 GPQA/HumanEval 对应历史格式，既有实验无需重跑。预处理器校验新格式的图哈希和结构；来源文件应再用 `--expected-sha256` 固定。新格式不会把旧格式里的全部审核详情复制进去，因此独立复核模型审查仍需原冻结文件。
 
-对新的 GPQA、HumanEval 或后续 benchmark，构图器应先完成各自的来源与语义审核，再把接受的节点转换到上述固定结构，调用 `validate_row()` 验证，并为数据集发布独立的行数、排除原因与文件哈希清单。当前导出脚本只实现已经验收的 GPQA/HumanEval 两种历史输入；其他 benchmark 需要新增明确的来源适配，不能仅改 `benchmark` 字符串绕过校验。
+对新的 GPQA、HumanEval 或后续 benchmark，构图器应先完成各自的来源与语义审核，再把接受的节点转换到上述固定结构，调用 `validate_row()` 验证，并为数据集发布独立的行数、排除原因与文件哈希清单。导出脚本支持已验收的 GPQA/HumanEval 历史输入及完成全链路审计后的 LiveCodeBench v6 接受子集；它不把未完成回修批次或非接受样本转换为实验输入。其他 benchmark 仍需要明确的来源适配，不能仅改 `benchmark` 字符串绕过校验。
 
 ## 已做的兼容性核对
 

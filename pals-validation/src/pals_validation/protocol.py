@@ -16,6 +16,11 @@ HUMANEVAL_SYSTEM = SYSTEM + (
     "Do not output a function implementation, code fence or unit tests."
 )
 
+LIVECODEBENCH_SYSTEM = SYSTEM + (
+    " The question is a programming problem. Continue the algorithm explanation "
+    "in natural language, not source code. Do not output a program, code fence or tests."
+)
+
 HUMANEVAL_GENERATION_V2 = HUMANEVAL_SYSTEM + (
     " Complete exactly ONE next reasoning step, not the remaining solution. "
     "Normally one to four sentences are enough; finish the thought before stopping. "
@@ -32,11 +37,13 @@ def system_prompt(case, generation_prompt_version="v1"):
         if case.get("task_type") != "humaneval":
             raise ValueError("HumanEval generation prompt used for another benchmark")
         return HUMANEVAL_GENERATION_V2
-    return HUMANEVAL_SYSTEM if case.get("task_type") == "humaneval" else SYSTEM
+    if case.get("task_type") == "humaneval":
+        return HUMANEVAL_SYSTEM
+    return LIVECODEBENCH_SYSTEM if case.get("task_type") == "livecodebench" else SYSTEM
 
 
 def question(case):
-    if case.get("task_type") == "humaneval":
+    if case.get("task_type") in ("humaneval", "livecodebench"):
         return case["question"]  # Preserve function signature, indentation and docstring.
     return case["question"] + "\n\n" + "\n".join(
         f"{letter}. {text}" for letter, text in zip("ABCD", case["choices"]))
@@ -63,7 +70,7 @@ def parse_step(text, task_type=None):
     body, boundary, spill = text.partition("</step>")
     invalid = (not boundary or not body.strip() or
                any(tag in body for tag in ("<step>", "<answer>", "</answer>", "RESULT:", "<think>", "</think>")))
-    if not invalid and task_type == "humaneval" and is_code_step(body):
+    if not invalid and task_type in ("humaneval", "livecodebench") and is_code_step(body):
         return {"valid": False, "body": None, "spill": spill, "reason": "code_instead_of_algorithm_step"}
     return {"valid": not invalid, "body": None if invalid else body.strip(),
             "spill": spill, "reason": "missing_boundary_empty_or_nested_structure" if invalid else None}

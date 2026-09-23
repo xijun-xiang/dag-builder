@@ -1,8 +1,10 @@
-# PALS：GPQA-Diamond / HumanEval E1 / E2
+# PALS：GPQA-Diamond / HumanEval / LiveCodeBench v6 E1 / E2
 
-将散落的先导协议整理成独立、可审计的实验代码。不依赖 infi-evalscope 或 dag-builder 的 Python 包；不自动连接集群、下载模型或提交任务。支持 GPQA 和明确标记的 HumanEval accepted DAG 导出，不包含 E3。
+将散落的先导协议整理成独立、可审计的实验代码。不依赖 infi-evalscope 或 dag-builder 的 Python 包；不自动连接集群、下载模型或提交任务。支持 GPQA、HumanEval 及 LiveCodeBench v6 的统一格式 accepted DAG，不包含 E3。
 
 HumanEval 使用 `prepare --benchmark humaneval`，原始函数说明取代四选项输入；其 g/N/D、图算子与选点规则不变，使用独立协议版本。[HumanEval 操作说明](docs/HUMANEVAL.md)。GPQA 仍为默认 adapter。
+
+LiveCodeBench v6 使用 `prepare --benchmark livecodebench`，输入须是构图库完成来源、CPU 与语义审核后发布的 `unified/pals_dag_unified_v1.jsonl`，并用 `--expected-sha256` 固定文件。stdin 题 `entry_point=null`，functional 题保留函数入口；两者仅使用题面和推理步骤，参考代码与答案节点均不进入评分前缀。此入口已通过离线兼容性测试，**不是已完成的 B1 LiveCodeBench PALS 实验**。
 
 **状态：离线测试、真实 118 题预处理及 Qwen2.5-7B 的 B1 八卡 canary 已通过。其他模型尚未验收；配置示例不是已经验证过的五模型运行配置。** 详见 [canary 记录](docs/CANARY-20260918.md)。
 

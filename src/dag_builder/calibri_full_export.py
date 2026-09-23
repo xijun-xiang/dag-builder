@@ -1,6 +1,7 @@
 """Reviewable LiveCodeBench v6 CALIBRI candidate export with all 175 outcomes."""
 
 import json
+import hashlib
 from collections import Counter
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from .calibri_review_resume import audit_completed as audit_review_resume
 from .livecodebench_dag import verify_execution
 from .schemas import require
 from .storage import digest, private_dir, read_json, write_bytes_once, write_once
+from .unified import convert_file, convert_record
 
 PROTOCOL = "calibri-lcb-v6-model-candidates-v1"
 
@@ -45,7 +47,7 @@ def _html(rows, manifest):
     data = data.replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     return ("""<!doctype html><html lang="zh"><meta charset="utf-8"><title>LiveCodeBench v6 DAG 审核</title>
 <style>body{font:15px system-ui;margin:24px auto;max-width:1280px;background:#f5f7fb;color:#172238}header,article{background:white;padding:20px;margin:14px;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:8px;text-align:left;vertical-align:top}input,select{padding:8px;margin:6px}summary{cursor:pointer;font-weight:600}</style>
-<header><h1>LiveCodeBench v6：CALIBRI 派生 DAG</h1><p>175题流转；模型审核候选不等于官方或人工gold。输入候选91题，接受子集由下方清单给出。</p><p><a href="accepted_candidates.jsonl">接受候选JSONL</a> · <a href="flow_175.jsonl">175题流转JSONL</a> · <a href="manifest.json">清单</a></p><pre id="summary"></pre><input id="query" placeholder="题号或ID"><select id="status"><option value="">全部状态</option></select><span id="count"></span></header><main id="list"></main>
+<header><h1>LiveCodeBench v6：CALIBRI 派生 DAG</h1><p>175题流转；模型审核候选不等于官方或人工gold。输入候选91题，接受子集由下方清单给出。</p><p><a href="unified/pals_dag_unified_v1.jsonl">PALS统一实验输入</a> · <a href="unified/pals_dag_unified_v1.html">统一查看器</a> · <a href="accepted_candidates.jsonl">原始接受候选</a> · <a href="flow_175.jsonl">175题流转</a> · <a href="manifest.json">清单</a></p><pre id="summary"></pre><input id="query" placeholder="题号或ID"><select id="status"><option value="">全部状态</option></select><span id="count"></span></header><main id="list"></main>
 <script id="data" type="application/json">""" + data + """</script><script>
 const src=JSON.parse(document.getElementById('data').textContent),rows=src.rows;
 const el=(tag,value)=>{const x=document.createElement(tag);x.textContent=String(value??'');return x};
@@ -157,6 +159,13 @@ def export(source, execution, continuation, repair, development_runs, output):
             and sum(r["cpu_status"] == "passed" for r in rows) == 91
             and len(accepted) == sum(r["model_accepted"] for r in rows),
             "full flow or accepted subset mismatch")
+    require(bool(accepted), "no accepted DAGs to release")
+    accepted_bytes = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n"
+                             for row in accepted).encode("utf-8")
+    accepted_hash = hashlib.sha256(accepted_bytes).hexdigest()
+    # Validate every row against the common PALS contract before publishing files.
+    for row in accepted:
+        convert_record(row, "livecodebench_v6", accepted_hash)
     counts = dict(Counter(row["status"] for row in rows))
     output_manifest = {"schema_version": PROTOCOL, "total_questions": 175,
                        "calibri_source_candidates": 93, "cpu_passed": 91,
@@ -170,10 +179,13 @@ def export(source, execution, continuation, repair, development_runs, output):
                        "repair_audit_sha256": digest(repair_report),
                        "flow_sha256": digest(rows), "accepted_sha256": digest(accepted),
                        "quality": "CALIBRI-derived, frozen reference code CPU-tested, same-model DAG audited; not official or human gold"}
-    for name, data in (("flow_175", rows), ("accepted_candidates", accepted)):
-        write_bytes_once(output / (name + ".jsonl"), "".join(
-            json.dumps(row, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n"
-            for row in data).encode())
+    write_bytes_once(output / "flow_175.jsonl", "".join(
+        json.dumps(row, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n"
+        for row in rows).encode("utf-8"))
+    write_bytes_once(output / "accepted_candidates.jsonl", accepted_bytes)
+    unified_manifest = convert_file(output / "accepted_candidates.jsonl", "livecodebench_v6",
+                                    accepted_hash, output / "unified")
+    output_manifest["unified_manifest_sha256"] = digest(unified_manifest)
     write_once(output / "manifest.json", output_manifest)
     write_bytes_once(output / "dag_viewer.html", _html(rows, output_manifest).encode())
     return output_manifest

@@ -1,5 +1,16 @@
 # LiveCodeBench v6：执行协议与进度
 
+## 2026-09-23：统一 DAG 交付格式接入
+
+完成来源、CPU、模型审核和全链路离线审计的接受子集，将在原始候选记录外
+额外导出 `unified/pals_dag_unified_v1.jsonl`、同格式 HTML 及哈希清单。
+GPQA、HumanEval 和 LiveCodeBench 使用同一顶层及节点字段；stdin 题的
+`problem.entry_point=null`，functional 题保留函数入口。原始记录、失败清单和
+175题流转不会被统一格式覆盖。PALS 预处理增加 `--benchmark livecodebench`，
+读取统一文件并生成 E1/E2 准备产物；输入须以实际文件 SHA256 固定。
+这只是工程接口验收。当前35题回修批次因 HTTP 500 暂停，尚无完成审计的
+LiveCodeBench 统一正式发布文件，也未启动 B1 PALS 评分。
+
 2026-09-22 用户确认：仅第六批新增题 `v6`（test6.jsonl，175 题），
 不是累计 1055 题的 `release_v6`，也不使用可变 `release_latest`。
 
