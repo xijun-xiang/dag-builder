@@ -44,6 +44,9 @@ def pipeline_type(root, config):
         if config.prompt_version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3"):
             from dag_builder.calibri_pipeline import CALIBRIPipeline
             return CALIBRIPipeline
+        if config.prompt_version == "t2ance-lcb-normalize-v1":
+            from dag_builder.t2ance_pipeline import T2ancePipeline
+            return T2ancePipeline
         if config.prompt_version == "livecodebench-editorial-pilot-v1":
             from dag_builder.livecodebench_editorial import EditorialPilot
             return EditorialPilot

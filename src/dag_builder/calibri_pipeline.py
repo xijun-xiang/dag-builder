@@ -206,7 +206,10 @@ class CALIBRIPipeline(Pipeline):
                    "execution_evidence": item["execution_evidence"],
                    "calculation_check": {"status": "reference_tests_passed"},
                    "formal_eligible": False, "quality_status": "model_reviewed_pending_release_audit",
-                   "limitation": "CALIBRI-derived explanation; frozen code tested; same-model semantic review, not native CoT or official/human gold"}
+                   "limitation": (
+                       "CALIBRI-derived explanation; frozen code tested; same-model semantic review, not native CoT or official/human gold"
+                       if item.get("reference_origin", "calibri_model_output") == "calibri_model_output" else
+                       "t2ance-derived explanation; frozen code tested; same-model semantic review, not native CoT or official/human gold")}
             if (self.root / "calibri-continuation-manifest.json").exists():
                 continuation = read_json(self.root / "calibri-continuation-manifest.json")
                 dag["recovery_provenance"] = {

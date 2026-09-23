@@ -33,6 +33,21 @@ def fixture():
 
 
 class T2anceSourceTests(unittest.TestCase):
+    def test_cpu_canary_is_score_blind_stratified_and_frozen(self):
+        groups = (("functional", "hard", 13), ("functional", "medium", 10),
+                  ("stdin", "hard", 26), ("stdin", "medium", 11))
+        items = [{"item_id": f"item-{io}-{difficulty}-{n}", "io_type": io,
+                  "difficulty": difficulty}
+                 for io, difficulty, count in groups for n in range(count)]
+        chosen = source.canary_seven(items)
+        self.assertEqual(len(chosen), 7)
+        self.assertEqual([sum((item["io_type"], item["difficulty"]) == group
+                              for item in chosen) for group in source.CANARY_SEVEN_QUOTAS],
+                         [2, 1, 3, 1])
+        self.assertEqual(chosen, source.canary_seven(items))
+        with self.assertRaises(ValueError):
+            source.canary_seven(items[:-1])
+
     def test_valid_passed_candidate_and_no_code_execution(self):
         item, row = fixture()
         calls = []

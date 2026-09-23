@@ -18,9 +18,17 @@ REVIEW_CHECKS = (
 )
 
 
+def output_source_field(item):
+    """Keep historical CALIBRI provenance while naming newer source outputs."""
+    origin = item.get("reference_origin", "calibri_model_output")
+    require(origin in ("calibri_model_output", "t2ance_model_output"),
+            "unknown reference output origin")
+    return "calibri_output" if origin == "calibri_model_output" else "t2ance_output"
+
+
 def source_units(item):
     """Line units are lossless anchors, NOT the intended reasoning granularity."""
-    sources = {"question": item["question"], "calibri_output": item["raw_output"],
+    sources = {"question": item["question"], output_source_field(item): item["raw_output"],
                "reference_code": item["reference_code"]}
     result = []
     for prefix, (field, value) in zip(("Q", "O", "C"), sources.items()):
@@ -87,7 +95,9 @@ def normalize(value, item):
         require(isinstance(omission, dict) and set(omission) == {"source_refs", "reason"}
                 and text(omission["reason"]), "invalid omission record")
         anchors(omission["source_refs"])
-    return {"protocol": PROTOCOL, "nodes": nodes, "omissions": omissions,
+    protocol = ("t2ance-lcb-normalize-v1" if output_source_field(item) == "t2ance_output"
+                else PROTOCOL)
+    return {"protocol": protocol, "nodes": nodes, "omissions": omissions,
             "original_output_sha256": digest(item["raw_output"]),
             "code_sha256": digest(item["reference_code"]),
             "claim": "mechanically valid normalization proposal, pending semantic review"}
@@ -110,7 +120,7 @@ def assemble_graph(value, normalized, item):
                   "support_type": "source_supported", "parents": value["answer_parents"],
                   "justification": value["answer_justification"], "excluded_from_pals": True})
     validate_nodes({"nodes": graph}, item["question"], "", extra_sources={
-        "calibri_output": item["raw_output"], "reference_code": item["reference_code"]},
+        output_source_field(item): item["raw_output"], "reference_code": item["reference_code"]},
         allow_reference_code_facts=True)
     validate_parents({"parents": [{"node_id": n["node_id"], "parents": n["parents"]} for n in graph]}, graph)
     validate_justifications({"justifications": [{"node_id": n["node_id"], "text": n["justification"]}

@@ -16,11 +16,11 @@ from dag_builder.livecodebench_tests import decode_tests
 from dag_builder.pipeline import implementation
 from dag_builder.schemas import require
 from dag_builder.storage import digest, private_dir, read_json, write_bytes_once, write_once
-from dag_builder.t2ance_source import inspect_candidate
+from dag_builder.t2ance_source import canary_seven, inspect_candidate
 from verify_livecodebench_reference import POLICY, file_hash, static_check
 
 
-def prepare(source, source_file, output):
+def prepare(source, source_file, output, *, canary=False):
     source = Path(source)
     items, manifest = read_json(source / "items.json"), read_json(source / "t2ance-manifest.json")
     require(manifest["protocol"] == "t2ance-lcb-source-v1"
@@ -36,8 +36,9 @@ def prepare(source, source_file, output):
     require(len(originals) == 175 and digest(originals) == manifest["full_cohort_sha256"],
             "original cohort changed")
     by_id = {i["item_id"]: i for i in originals}
+    selected = canary_seven(items) if canary else items
     rows = []
-    for item in items:
+    for item in selected:
         original = by_id[item["item_id"]]
         require(all(item[k] == original[k] for k in (
             "question", "question_id", "platform", "io_type", "entry_point", "starter_code",
@@ -65,16 +66,22 @@ def prepare(source, source_file, output):
         gzip.compress((root / "execution-input.json").read_bytes(), mtime=0))
     write_bytes_once(root / harness.name, harness.read_bytes())
     write_once(root / "input-manifest.json", {
-        "protocol": POLICY, "preparation_protocol": "t2ance-full-execution-v1",
+        "protocol": POLICY, "preparation_protocol": (
+            "t2ance-canary7-execution-v1" if canary else "t2ance-full-execution-v1"),
         "reference_origin": "t2ance_model_output", "source_sha256": SOURCE_SHA256,
         "t2ance_manifest_sha256": digest(manifest), "selected": len(originals),
-        "planned": len(rows), "inputs_sha256": digest(rows),
+        "source_candidates": len(items), "planned": len(rows),
+        "sample_ids": [item["item_id"] for item in selected],
+        "held_without_cpu": [item["item_id"] for item in items if item not in selected],
+        "sample_policy": ("frozen SHA-256 seed within fixed I/O x difficulty quotas"
+                          if canary else "all source candidates"),
+        "inputs_sha256": digest(rows),
         "harness_sha256": file_hash(harness), "prepare_script_sha256": file_hash(__file__),
         "implementation": implementation(),
         "comparison": "exact JSON equality / whitespace-normalized lines; no float tolerance",
-        "claim": "pending isolated execution; neither accepted DAGs nor benchmark scores"})
+        "claim": "pending isolated execution; untested candidates are not CPU-verified DAGs or scores"})
     return {"original_questions": len(originals), "candidates": len(items),
-            "test_count": sum(len(r["tests"]) for r in rows),
+            "planned": len(rows), "test_count": sum(len(r["tests"]) for r in rows),
             "input_manifest_sha256": file_hash(root / "input-manifest.json")}
 
 
@@ -83,5 +90,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("source", "source-file", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--canary-seven", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(prepare(args.source, args.source_file, args.output)), flush=True)
+    print(json.dumps(prepare(args.source, args.source_file, args.output,
+                             canary=args.canary_seven)), flush=True)

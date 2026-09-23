@@ -23,6 +23,12 @@ from .storage import digest, private_dir, read_json, write_once
 DATASET = "t2ance/code-solutions"
 REVISION = "eff8865b42b8badf2d8f7912b0ab9cfe5df3dc1a"
 SEED = 20260923
+CANARY_SEVEN_QUOTAS = {
+    ("functional", "hard"): 2,
+    ("functional", "medium"): 1,
+    ("stdin", "hard"): 3,
+    ("stdin", "medium"): 1,
+}
 # Sizes and SHA-256 are the pinned Hugging Face tree's LFS metadata.
 FILES = {
     "data/lcb/deepseek/chunk_00000.parquet": (2353850, "a407a90e62b177ab7c8153b69785235d5b5ebe7700334ccb1e4718a1873c2e75"),
@@ -40,6 +46,22 @@ FILES = {
     "data/lcb/qwen3_30b/chunk_00003.parquet": (9862138, "24426f0e551af2ad05c0627ce8fd15f8e8a7723b553767fc608b758f5afe9e8d"),
     "data/lcb/qwen3_30b/chunk_00004.parquet": (5173260, "6938003a406dd1de73cd53ba518dc72b265c6d659e8cb103d7058cd738abf74f"),
 }
+
+
+def canary_seven(items):
+    """Freeze a score-blind 7/60 CPU regression sample across I/O and difficulty."""
+    require(len(items) == 60 and len({item["item_id"] for item in items}) == 60,
+            "canary requires the frozen 60-candidate cohort")
+    chosen = set()
+    for stratum, quota in CANARY_SEVEN_QUOTAS.items():
+        members = [item for item in items
+                   if (item["io_type"], item["difficulty"]) == stratum]
+        require(len(members) >= quota, "canary stratum changed")
+        ranked = sorted(members, key=lambda item: digest({
+            "seed": SEED, "purpose": "cpu-canary-seven", "item_id": item["item_id"]}))
+        chosen.update(item["item_id"] for item in ranked[:quota])
+    require(len(chosen) == 7, "canary selection incomplete")
+    return [item for item in items if item["item_id"] in chosen]
 
 
 def verify_file(path, name):

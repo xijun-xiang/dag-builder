@@ -11,6 +11,7 @@ from dag_builder.livecodebench_source import REVISION, SOURCE_SHA256, normalize_
 from dag_builder.livecodebench_tests import decode_tests
 from dag_builder.schemas import parse_object, require
 from dag_builder.storage import digest, read_json, write_once
+from dag_builder.t2ance_source import canary_seven
 
 
 def expected_rows(items, originals, bundles):
@@ -45,8 +46,18 @@ def audit(execution, source, raw_source, frozen_package):
     require(read_json(frozen_package / "source/items.json") == items
             and read_json(frozen_package / "source/t2ance-manifest.json") == manifest,
             "deployed package changed")
-    rows = expected_rows(items, originals, bundles)
     returned = read_json(execution / "input-manifest.json")
+    protocol = returned["preparation_protocol"]
+    require(protocol in ("t2ance-full-execution-v1", "t2ance-canary7-execution-v1"),
+            "unknown CPU preparation protocol")
+    selected = canary_seven(items) if protocol == "t2ance-canary7-execution-v1" else items
+    for item in selected:
+        filename = item["item_id"] + ".json"
+        deployed = read_json(frozen_package / "source/source-rows" / filename)
+        require(deployed == read_json(source / "source-rows" / filename)
+                and digest(deployed) == item["origin"]["selected_columns_sha256"],
+                "deployed raw source row changed")
+    rows = expected_rows(selected, originals, bundles)
     origin = read_json(frozen_package / "code/snapshot_origin.json")
     require(returned["implementation"]["source_files"] == origin["source_files"]
             and returned["implementation"]["git_commit"] == origin["git_commit"]
@@ -58,18 +69,23 @@ def audit(execution, source, raw_source, frozen_package):
             and returned["t2ance_manifest_sha256"] == digest(manifest)
             and returned["inputs_sha256"] == digest(rows)
             and read_json(execution / "execution-input.json") == rows
-            and returned["selected"] == 175 and returned["planned"] == len(items),
+            and returned["selected"] == 175 and returned["source_candidates"] == len(items)
+            and returned["planned"] == len(selected)
+            and returned["sample_ids"] == [item["item_id"] for item in selected]
+            and returned["held_without_cpu"] == [item["item_id"] for item in items
+                                                  if item not in selected],
             "CPU input differs from independent reconstruction")
     results, completion = verify_execution(execution, execution / "input-manifest.json")
-    by_id = {i["item_id"]: i for i in items}
+    by_id = {i["item_id"]: i for i in selected}
     failures = []
     for item_id, (_, result) in results.items():
         if result["status"] != "passed":
             failures.append({"item_id": item_id, "question_id": by_id[item_id]["question_id"],
                              "counts": result["counts"]})
-    return {"protocol": "t2ance-full-execution-offline-audit-v1", "mechanical_pass": True,
+    return {"protocol": "t2ance-execution-offline-audit-v1", "mechanical_pass": True,
             "job_id": completion["job_id"], "hostname": completion["hostname"],
             "original_questions": len(originals), "source_candidates": len(items),
+            "cpu_sampled": len(selected), "held_without_cpu": len(items) - len(selected),
             "reference_passed": completion["passed"], "reference_not_passed": len(failures),
             "tests": sum(len(r["tests"]) for r in rows),
             "test_statuses": dict(Counter(t["status"] for _, r in results.values()
