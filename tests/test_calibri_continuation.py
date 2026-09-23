@@ -5,11 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dag_builder.calibri_continuation import prepare_continuation, verify_continuation
+from dag_builder.calibri_continuation import audit_completed, prepare_continuation, verify_continuation
 from dag_builder.calibri_pipeline import CALIBRIPipeline, prepare
 from dag_builder.config import Config
 from dag_builder.stages import prompt
-from dag_builder.storage import read_json, write_once
+from dag_builder.storage import read_json, write_bytes_once, write_once
 from test_calibri_pipeline import config, setup
 
 V2 = "calibri-lcb-normalize-v2"
@@ -78,6 +78,17 @@ class ContinuationTests(unittest.TestCase):
                              "one_fixed_graph_schema_review")
             self.assertFalse(dag["formal_eligible"])
             self.assertEqual(len(verify_continuation(new, Config.load(new / "config.json"))), 1)
+            import dag_builder
+            package = Path(dag_builder.__file__).parent
+            code = read_json(new / "implementation.json")
+            write_once(new / "code_origin.json", code)
+            for name in code["source_files"]:
+                write_bytes_once(new / "controller/code/dag_builder" / name,
+                                 (package / name).read_bytes())
+            write_once(new / "completion.json", {"status": "processed"})
+            audited = audit_completed(new)
+            self.assertEqual(audited["statuses"], {"model_accepted": 1})
+            self.assertEqual(audited["campaign_requests"], 4)
 
     def test_raw_reject_is_not_reaudited_and_evidence_tamper_fails(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -276,6 +276,12 @@ def audit_completed(root):
     items = verify_continuation(root, config)
     require(read_json(root / "completion.json")["status"] == "processed",
             "continuation has not completed")
+    code = read_json(root / "code_origin.json")
+    require(read_json(root / "implementation.json")["code_sha256"] == code["code_sha256"],
+            "continuation implementation changed")
+    for name, expected in code["source_files"].items():
+        require(sha256((root / "controller/code/dag_builder" / name).read_bytes()).hexdigest() == expected,
+                "frozen continuation code changed")
     manifest = read_json(root / "calibri-continuation-manifest.json")
     old_uncertain = {
         manifest["active_files"][name] for name in manifest["uncertain_requests"]
