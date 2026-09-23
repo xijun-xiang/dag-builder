@@ -7,6 +7,7 @@ from pathlib import Path
 
 from dag_builder.calibri_continuation import audit_completed, prepare_continuation, verify_continuation
 from dag_builder.calibri_pipeline import CALIBRIPipeline, prepare
+from dag_builder.calibri_repair import CHECKED_PROTOCOL, prepare_repair
 from dag_builder.config import Config
 from dag_builder.stages import prompt
 from dag_builder.storage import read_json, write_bytes_once, write_once
@@ -117,6 +118,43 @@ class ContinuationTests(unittest.TestCase):
             result = CALIBRIPipeline(run, config(), client, resilient=True).run()
             self.assertTrue(result["paused"])
             self.assertEqual(client.calls, [])
+
+    def test_completed_v3_dependency_failure_can_enter_one_checked_repair(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            source, execution, _, outputs = setup(root)
+            old = root / "old-v2"
+            prepare(source, execution, execution / "input-manifest.json", old,
+                    prompt_version=V2)
+            outputs["dependencies"] = {**outputs["dependencies"], "answer_parents": []}
+            result = CALIBRIPipeline(old, config(prompt_version=V2), Client(outputs, V2)).run()
+            self.assertEqual(result["results"][0]["stage"], "dependencies")
+            requests = list(old.glob("items/*/*/attempt-*/request.json"))
+            write_once(old / "operator-stop-20260923-schema.json", {
+                "action": "SIGTERM exact verified worker process group; synthetic test",
+                "requests_recorded": len(requests),
+                "reserved_tokens": sum(read_json(p)["reserved_tokens"] for p in requests),
+                "pending_at_stop": [],
+            })
+            write_once(old / "code_origin.json", read_json(old / "implementation.json"))
+            write_once(old / "launch.json", {"host": "local", "pid": 12345})
+            write_once(old / "worker-start.json", {"pid": 12345})
+            new = root / "continue"
+            prepare_continuation(old, new)
+            CALIBRIPipeline(new, Config.load(new / "config.json"), Client(outputs, V3),
+                            resilient=True).run()
+            import dag_builder
+            package = Path(dag_builder.__file__).parent
+            code = read_json(new / "implementation.json")
+            write_once(new / "code_origin.json", code)
+            for name in code["source_files"]:
+                write_bytes_once(new / "controller/code/dag_builder" / name,
+                                 (package / name).read_bytes())
+            write_once(new / "completion.json", {"status": "processed"})
+            self.assertTrue(audit_completed(new)["mechanical_pass"])
+            selection = prepare_repair(new, root / "repair", prompt_version=CHECKED_PROTOCOL,
+                                       first_pass=True)
+            self.assertEqual(selection["selected_count"], 1)
 
 
 if __name__ == "__main__":
