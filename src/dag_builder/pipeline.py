@@ -301,6 +301,13 @@ class Pipeline:
                         "transport_kind": error.transport_kind,
                     },
                 )
+                if (error.category == "uncertain_remote_state"
+                        and error.transport_kind == "curl_exit_6"):
+                    # Name resolution failed before an HTTP connection. Keep the
+                    # attempt conservatively charged, but do not multiply the
+                    # same systemic outage across the cohort.
+                    self._stop.set()
+                    raise
                 if error.category in transient:
                     if error.category == "uncertain_remote_state":
                         with self._budget_lock:

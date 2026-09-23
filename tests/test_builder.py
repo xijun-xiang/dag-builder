@@ -430,6 +430,18 @@ class BuilderTests(unittest.TestCase):
             "model_accepted",
         )
 
+    def test_resilient_dns_failure_stops_after_one_conservatively_charged_call(self):
+        client = FakeClient(failure=CallFailure(
+            "uncertain_remote_state", transport_kind="curl_exit_6"))
+        runner = Pipeline(self.root, Config(workers=1), client, resilient=True)
+        result = runner.run()
+        self.assertTrue(result["global_stop"])
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(result["attempt_count"], 1)
+        self.assertEqual(read_json(self.root / "items" / self.item["item_id"]
+                                   / "solve/attempt-00/error.json")["transport_kind"],
+                         "curl_exit_6")
+
     def test_resilient_retries_rate_limit_and_uses_first_returned_response(self):
         good = FakeClient()
         runner = Pipeline(self.root, Config(workers=1), good, resilient=True)
