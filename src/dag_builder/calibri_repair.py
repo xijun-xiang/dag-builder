@@ -32,6 +32,10 @@ REPAIR_CHECKS = (
 )
 
 
+class NoDependencyProposal(ValueError):
+    """A recorded dependency response failed parsing; there is no graph to repair."""
+
+
 def apply_repair(value, previous, item):
     """Apply a narrow edit contract. Semantic validity remains a separate gate."""
     require(isinstance(value, dict) and set(value) == {"additions", "removals", "reason"}
@@ -151,9 +155,16 @@ def _failed_seed(parent, item, config):
     require(not contract["violations"], "cannot repair an API contract failure")
     choices = body.get("choices", [])
     require(len(choices) == 1 and choices[0].get("finish_reason") == "stop", "non-stop source response")
-    dependencies = parse_object(choices[0]["message"].get("content"))
-    require(isinstance(dependencies, dict) and set(dependencies) == {
-        "dependencies", "answer_parents", "answer_justification"}, "not a dependency proposal")
+    try:
+        dependencies = parse_object(choices[0]["message"].get("content"))
+        require(isinstance(dependencies, dict) and set(dependencies) == {
+            "dependencies", "answer_parents", "answer_justification"}, "not a dependency proposal")
+    except InvalidOutput as error:
+        require(str(error) == result["reason"] == read_json(
+            directory / "dependencies/validation.json")["reason"]
+            and not (directory / "dependencies/output.json").exists(),
+            "nonstructural dependency failure does not match recorded evidence")
+        raise NoDependencyProposal(str(error)) from error
     try:
         assemble_graph(dependencies, normalized, item)
     except InvalidOutput as error:
@@ -268,7 +279,14 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
             files[str(result_path.relative_to(parent))] = result_path.read_bytes()
             continue
         if result.get("status") == "needs_review" and result.get("stage") == "dependencies":
-            seed, paths = _failed_seed(parent, item, old_config)
+            try:
+                seed, paths = _failed_seed(parent, item, old_config)
+            except NoDependencyProposal as error:
+                exclusions.append({"item_id": item["item_id"], "status": result["status"],
+                                   "stage": result["stage"],
+                                   "reason": "no parseable dependency graph; not repaired: " + str(error)})
+                files[str(result_path.relative_to(parent))] = result_path.read_bytes()
+                continue
             if checked_revision:
                 require(history_items[item["item_id"]] == item, "revision source item changed")
                 seed["development_feedback"] = _development_feedback(history, item)
@@ -285,7 +303,7 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
                  "source_count": len(original_items), "excluded": exclusions,
                  "sampling": ("all remaining v1 semantic failures, checked development revision; no PALS-based selection"
                               if checked_revision else
-                              "all v2 dependency-stage failures, one repair each; no PALS-based selection")}
+                              "all parseable structural dependency failures, one repair each; no PALS-based selection")}
     for name in ("items.json", "selection.json", "run_config.json", "completion.json", "calibri-normalization-manifest.json"):
         files[name] = (parent / name).read_bytes()
     if old_config.prompt_version == "calibri-lcb-normalize-v3":

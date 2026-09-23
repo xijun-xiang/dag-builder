@@ -63,6 +63,9 @@ def _replay_recorded_calls(root, config, *, old_uncertain=()):
     items = {item["item_id"]: item for item in read_json(root / "items.json")}
     legacy_config = (Config.load(root / "parent-evidence/run_config.json")
                      if (root / "parent-evidence/run_config.json").exists() else config)
+    manifest_path = root / "calibri-continuation-manifest.json"
+    imported_paths = (set(read_json(manifest_path)["active_files"].values())
+                      if manifest_path.exists() else set())
     uncertain = set(old_uncertain)
     seen_uncertain = set()
     for path in sorted(root.glob("items/*/*/attempt-*/request.json")):
@@ -75,7 +78,9 @@ def _replay_recorded_calls(root, config, *, old_uncertain=()):
         require(item_id in items, "request outside frozen cohort")
         input_record = read_json(path.parent.parent / "input.json")
         request = read_json(path)
-        controls = legacy_config if stage == "legacy_review_dag" else config
+        # Carried terminal reviews keep their original path as well as their v2
+        # request. Select the protocol by provenance, not by stage name alone.
+        controls = legacy_config if name in imported_paths else config
         expected = payload(source_stage, input_record["input"], controls)
         require(input_record["payload_sha256"] == digest(expected)
                 and request["payload"] == expected, "recorded request differs from frozen input")

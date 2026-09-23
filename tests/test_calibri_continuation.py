@@ -109,6 +109,27 @@ class ContinuationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "stopped-run evidence changed"):
                 verify_continuation(new, Config.load(new / "config.json"))
 
+    def test_carried_terminal_review_audits_with_original_prompt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            old, outputs = stopped_fixture(root, raw_decision="reject")
+            new = root / "continue"
+            prepare_continuation(old, new)
+            client = Client(outputs, V3)
+            result = CALIBRIPipeline(new, Config.load(new / "config.json"), client,
+                                     resilient=True).run()
+            self.assertEqual(result["results"][0]["status"], "needs_review")
+            self.assertEqual(client.calls, [])
+            import dag_builder
+            package = Path(dag_builder.__file__).parent
+            code = read_json(new / "implementation.json")
+            write_once(new / "code_origin.json", code)
+            for name in code["source_files"]:
+                write_bytes_once(new / "controller/code/dag_builder" / name,
+                                 (package / name).read_bytes())
+            write_once(new / "completion.json", {"status": "processed"})
+            self.assertEqual(audit_completed(new)["statuses"], {"needs_review": 1})
+
     def test_graceful_stop_flag_blocks_new_paid_call(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()

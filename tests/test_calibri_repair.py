@@ -11,7 +11,7 @@ from dag_builder.calibri_normalize import assemble_graph, normalize
 from dag_builder.calibri_pipeline import CALIBRIPipeline, prepare
 from dag_builder.calibri_repair import (
     CALIBRIRepairPipeline, PROTOCOL, REPAIR_CHECKS, STEP_FIELDS,
-    apply_repair, prepare_repair, validate_repair_audit,
+    NoDependencyProposal, _failed_seed, apply_repair, prepare_repair, validate_repair_audit,
 )
 from dag_builder.stages import prompt
 from dag_builder.storage import digest, read_json, write_once
@@ -58,6 +58,25 @@ def repair_outputs(outputs):
 
 
 class RepairContractTests(unittest.TestCase):
+    def test_unparseable_dependency_response_is_not_a_repair_seed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            source, execution, _, outputs = setup(root)
+            parent = root / "invalid-dependency"
+            prepare(source, execution, execution / "input-manifest.json", parent,
+                    prompt_version="calibri-lcb-normalize-v2")
+            outputs["dependencies"] = ["not a dependency object"]
+            client = Client(outputs, "calibri-lcb-normalize-v2")
+            result = CALIBRIPipeline(parent, config(prompt_version=client.version), client).run()
+            self.assertEqual(result["results"][0]["stage"], "dependencies")
+            self.assertEqual(result["results"][0]["status"], "needs_review")
+            write_once(parent / "completion.json", {"status": "processed"})
+            with self.assertRaises(NoDependencyProposal):
+                _failed_seed(parent, read_json(parent / "items.json")[0],
+                             config(prompt_version=client.version))
+            with self.assertRaisesRegex(ValueError, "no eligible dependency failures"):
+                prepare_repair(parent, root / "repair")
+
     def test_add_remove_and_id_mapping_without_rewriting(self):
         item, proposal, _ = fixture()
         proposal["steps"].append({**proposal["steps"][1], "statement": "This is also an identity transformation."})
