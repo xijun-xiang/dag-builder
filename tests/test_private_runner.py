@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from dag_builder.humaneval_recovery import HumanEvalRecoveryPipeline
 from dag_builder.pipeline import Pipeline
@@ -13,6 +14,18 @@ from dag_builder.storage import write_once
 
 
 class RunnerTests(unittest.TestCase):
+    def test_network_preflight_fails_before_launch_without_api_call(self):
+        script = Path(__file__).resolve().parents[1] / "scripts/run_private_pilot.py"
+        spec = importlib.util.spec_from_file_location("private_runner_preflight", script)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        with patch.object(runner.socket, "create_connection", side_effect=OSError):
+            with self.assertRaisesRegex(RuntimeError, "network preflight failed"):
+                runner.network_preflight("https://proxy.infix-ai.xyz/v1/")
+        with patch.object(runner.socket, "create_connection") as connect:
+            runner.network_preflight("https://proxy.infix-ai.xyz/v1/")
+            connect.assert_called_once_with(("proxy.infix-ai.xyz", 443), timeout=5)
+
     def test_protocol_dispatch_and_recovery_guard(self):
         script = Path(__file__).resolve().parents[1] / "scripts/run_private_pilot.py"
         spec = importlib.util.spec_from_file_location("private_runner_dispatch", script)

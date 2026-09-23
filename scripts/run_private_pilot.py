@@ -8,9 +8,23 @@ and transient retry policy; semantic/integrity failures are preserved, not repai
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
+
+
+def network_preflight(base_url):
+    """Check reachability from the same execution context before any API call."""
+    parsed = urlparse(base_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("network preflight requires an HTTPS API host")
+    try:
+        with socket.create_connection((parsed.hostname, parsed.port or 443), timeout=5):
+            pass
+    except OSError:
+        raise RuntimeError("network preflight failed; no model request sent") from None
 
 
 def pipeline_type(root, config):
@@ -57,6 +71,7 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--key-file", type=Path, required=True)
+    parser.add_argument("--network-preflight", action="store_true")
     parser.add_argument("--worker", action="store_true")
     args = parser.parse_args()
     root = args.root.absolute()
@@ -87,6 +102,8 @@ def main():
                 )
             config = Config.load(args.config)
             pipeline_type(root, config)
+            if args.network_preflight:
+                network_preflight(config.base_url)
             load_key(config.key_env, args.key_file)
             items = read_json(root / "items.json")
             assert items and all(
@@ -117,6 +134,8 @@ def main():
                 "--key-file",
                 str(args.key_file.absolute()),
             ]
+            if args.network_preflight:
+                command.append("--network-preflight")
             with (
                 (root / "worker.stdout.log").open("x") as out,
                 (root / "worker.stderr.log").open("x") as err,
@@ -161,6 +180,8 @@ def main():
                 root / "worker-start.json", {"pid": os.getpid(), "started_at": now()}
             )
             config = Config.load(args.config)
+            if args.network_preflight:
+                network_preflight(config.base_url)
             client = APIClient(config, load_key(config.key_env, args.key_file))
 
             def progress(row):

@@ -6,6 +6,7 @@ be inserted; omissions and every ID mapping remain auditable. Edges are then
 recomputed and the complete candidate receives a fresh-context semantic audit.
 """
 
+from hashlib import sha256
 from pathlib import Path
 
 from .calibri_normalize import (
@@ -24,6 +25,8 @@ from .storage import digest, private_dir, read_json, write_bytes_once, write_onc
 
 PROTOCOL = "calibri-lcb-repair-v1"
 CHECKED_PROTOCOL = "calibri-lcb-repair-v2"
+DNS_RECOVERY_PROTOCOL = "calibri-lcb-dns-transport-recovery-v1"
+DNS_RECOVERY_TOKEN_LIMIT = 32_000_000
 STEP_FIELDS = ("kind", "statement", "source_refs", "support_type", "normalization_note")
 REPAIR_CHECKS = (
     "added_premises_explicit_in_question", "removed_nodes_not_necessary",
@@ -197,6 +200,42 @@ def _used_budget(root, config):
     return prior_calls, prior_reserved
 
 
+def _dns_failed_transport_run(run, expected_parent):
+    """Audit a paused, response-free DNS failure without refunding any attempt."""
+    run = Path(run).resolve()
+    config = Config.load(run / "run_config.json")
+    require(config.prompt_version == CHECKED_PROTOCOL
+            and read_json(run / "completion.json")["status"] == "paused",
+            "only a paused checked first pass can be transport-recovered")
+    manifest = read_json(run / "calibri-repair-manifest.json")
+    require(manifest.get("repair_mode") == "checked_first_pass"
+            and manifest["parent_run"] == str(Path(expected_parent).resolve())
+            and "transport_recovery" not in manifest,
+            "DNS recovery cannot chain or change its source")
+    items = verify_repair(run, config)
+    require(not list(run.glob("items/*/result.json"))
+            and not list(run.glob("items/*/dag.json"))
+            and not list(run.glob("items/*/*/attempt-*/response.json")),
+            "DNS failure contains a semantic response or terminal result")
+    requests = sorted(run.glob("items/*/*/attempt-*/request.json"))
+    require(bool(requests), "no DNS-failed requests to recover")
+    for path in requests:
+        require(path.parts[-3] == "repair", "DNS recovery cannot replay later stages")
+        stage = path.parent.parent
+        input_record = read_json(stage / "input.json")
+        expected = payload("repair", input_record["input"], config)
+        request = read_json(path)
+        error = read_json(path.parent / "error.json")
+        require(input_record["payload_sha256"] == digest(expected)
+                and request["payload"] == expected
+                and error["category"] == "uncertain_remote_state"
+                and error["transport_kind"] == "curl_exit_6"
+                and error["http_status"] is None,
+                "DNS recovery evidence is not a response-free name-resolution failure")
+    return (_used_budget(run, config), [item["item_id"] for item in items],
+            len(requests))
+
+
 def _development_feedback(history, item):
     """Only bound public material; never send run paths or hidden test metadata."""
     directory = history / "items" / item["item_id"]
@@ -218,7 +257,8 @@ def _development_feedback(history, item):
 
 
 def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
-                   prompt_version=PROTOCOL, history=None, first_pass=False):
+                   prompt_version=PROTOCOL, history=None, first_pass=False,
+                   transport_failed_run=None, campaign_token_limit=CAMPAIGN_TOKEN_LIMIT):
     """Freeze all eligible failures; v2 explicitly accounts for the prior pilot."""
     parent, root = Path(parent).resolve(), private_dir(root)
     require(parent != root and not root.is_relative_to(parent), "repair must use a new run directory")
@@ -236,6 +276,11 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
         require(audit_completed(parent)["mechanical_pass"], "continuation audit failed")
     original_items = verify_prepared(parent, old_config)
     old_proof = read_json(parent / "calibri-normalization-manifest.json")
+    require(type(campaign_token_limit) is int
+            and CAMPAIGN_TOKEN_LIMIT <= campaign_token_limit <= DNS_RECOVERY_TOKEN_LIMIT
+            and (campaign_token_limit == CAMPAIGN_TOKEN_LIMIT or transport_failed_run is not None),
+            "extra budget requires a bounded DNS transport recovery")
+    recovery = None
     history_files, history_items, history_results = {}, {}, {}
     if checked_revision:
         require(history is not None, "checked revision requires explicit prior development history")
@@ -260,9 +305,24 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
     else:
         require(history is None, "first repair does not accept revision history")
         prior_calls, prior_reserved = _used_budget(parent, old_config)
+    if transport_failed_run is not None:
+        require(first_pass and prompt_version == CHECKED_PROTOCOL and history is None,
+                "DNS transport recovery requires the same checked first pass")
+        transport_failed_run = Path(transport_failed_run).resolve()
+        require(transport_failed_run != root and not root.is_relative_to(transport_failed_run),
+                "transport recovery requires a new directory")
+        (prior_calls, prior_reserved), prior_selected_ids, failed_count = (
+            _dns_failed_transport_run(transport_failed_run, parent))
+        recovery = {"protocol": DNS_RECOVERY_PROTOCOL,
+                    "failed_run": str(transport_failed_run),
+                    "failed_requests": failed_count,
+                    "prior_selected_ids": prior_selected_ids,
+                    "prior_calls": prior_calls,
+                    "prior_reserved_tokens": prior_reserved,
+                    "campaign_token_limit": campaign_token_limit}
     require(type(max_calls) is int and 0 < max_calls <= CAMPAIGN_CALL_LIMIT - prior_calls,
             "campaign call allocation exceeded")
-    require(type(max_reserved_tokens) is int and 0 < max_reserved_tokens <= CAMPAIGN_TOKEN_LIMIT - prior_reserved,
+    require(type(max_reserved_tokens) is int and 0 < max_reserved_tokens <= campaign_token_limit - prior_reserved,
             "campaign token allocation exceeded")
     items, exclusions, seeds, files = [], [], {}, {}
     for item in original_items:
@@ -299,6 +359,9 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
                                "reason": "not a dependency-stage failure; not resampled"})
             files[str(result_path.relative_to(parent))] = result_path.read_bytes()
     require(bool(items), "no eligible dependency failures")
+    if recovery is not None:
+        require(recovery["prior_selected_ids"] == [item["item_id"] for item in items],
+                "transport recovery changed the fixed repair cohort")
     selection = {"selected_ids": [i["item_id"] for i in items], "selected_count": len(items),
                  "source_count": len(original_items), "excluded": exclusions,
                  "sampling": ("all remaining v1 semantic failures, checked development revision; no PALS-based selection"
@@ -321,7 +384,6 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
         write_bytes_once(root / "revision-history" / name, content)
     for item_id, seed in seeds.items():
         write_once(root / "repair-seeds" / (item_id + ".json"), seed)
-    from hashlib import sha256
     manifest = {"protocol": prompt_version, "max_repair_rounds": 1, "parent_run": str(parent),
                 "parent_files": {name: sha256(content).hexdigest() for name, content in files.items()},
                 "seed_sha256": {key: digest(value) for key, value in seeds.items()},
@@ -329,6 +391,19 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
                 "normalization_manifest_sha256": digest(proof)}
     if first_pass:
         manifest["repair_mode"] = "checked_first_pass"
+    if recovery is not None:
+        hashes = {}
+        for path in sorted(transport_failed_run.rglob("*")):
+            if path.is_file():
+                require(not path.is_symlink(), "symlinked transport evidence")
+                name = str(path.relative_to(transport_failed_run))
+                if path.name == ".lock":
+                    continue
+                content = path.read_bytes()
+                hashes[name] = sha256(content).hexdigest()
+                write_bytes_once(root / "transport-history" / name, content)
+        recovery["source_files"] = hashes
+        manifest["transport_recovery"] = recovery
     if checked_revision:
         manifest["development_iteration"] = 2
         manifest["history_files"] = {name: sha256(content).hexdigest() for name, content in history_files.items()}
@@ -339,7 +414,6 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
 
 
 def verify_repair(root, config):
-    from hashlib import sha256
     items = verify_prepared(root, config)
     manifest = read_json(root / "calibri-repair-manifest.json")
     require(manifest["protocol"] == config.prompt_version and manifest["protocol"] in (PROTOCOL, CHECKED_PROTOCOL)
@@ -362,6 +436,27 @@ def verify_repair(root, config):
         require(config.prompt_version == CHECKED_PROTOCOL
                 and "development_iteration" not in manifest and "history_files" not in manifest
                 and not (root / "revision-history").exists(), "mixed first-pass and revision evidence")
+    recovery = manifest.get("transport_recovery")
+    if recovery is not None:
+        require(first_pass and recovery["protocol"] == DNS_RECOVERY_PROTOCOL
+                and recovery["campaign_token_limit"] == DNS_RECOVERY_TOKEN_LIMIT,
+                "invalid DNS transport recovery protocol or limit")
+        history = root / "transport-history"
+        for name, expected in recovery["source_files"].items():
+            require(not Path(name).is_absolute() and ".." not in Path(name).parts
+                    and sha256((history / name).read_bytes()).hexdigest() == expected,
+                    "DNS transport evidence changed")
+        (calls, tokens), selected, failed = _dns_failed_transport_run(
+            history, manifest["parent_run"])
+        proof = read_json(root / "calibri-normalization-manifest.json")
+        require((calls, tokens, selected, failed) == (
+            recovery["prior_calls"], recovery["prior_reserved_tokens"],
+            recovery["prior_selected_ids"], recovery["failed_requests"])
+            and [item["item_id"] for item in items] == selected
+            and (proof["prior_calls"], proof["prior_reserved_tokens"]) == (calls, tokens)
+            and calls + config.max_calls <= CAMPAIGN_CALL_LIMIT
+            and tokens + config.max_reserved_tokens <= recovery["campaign_token_limit"],
+            "DNS recovery ledger or selected cohort changed")
     if config.prompt_version == CHECKED_PROTOCOL and not first_pass:
         require(manifest["development_iteration"] == 2, "undeclared development revision")
         for name, expected in manifest["history_files"].items():
@@ -428,6 +523,8 @@ class CALIBRIRepairPipeline(Pipeline):
                     dag["recovery_provenance"]["repair_mode"] = "checked_first_pass"
                 else:
                     dag["recovery_provenance"]["development_iteration"] = 2
+                if "transport_recovery" in manifest:
+                    dag["recovery_provenance"]["transport_recovery_protocol"] = DNS_RECOVERY_PROTOCOL
             write_once(directory / "dag.json", dag)
             return self._finish(item, "model_accepted", stage, "pending release audit", digest(dag))
         except InvalidOutput as error:
@@ -452,13 +549,17 @@ def main():
     parser.add_argument("--history", type=Path)
     parser.add_argument("--first-pass", action="store_true",
                         help="Apply checked v2 directly once to new normalization failures, without a v1 repair")
+    parser.add_argument("--transport-failed-run", type=Path)
+    parser.add_argument("--campaign-token-limit", type=int, default=CAMPAIGN_TOKEN_LIMIT)
     args = parser.parse_args()
     os.umask(0o077)
     with run_lock(args.root):
         print(json.dumps(prepare_repair(args.parent, args.root, max_calls=args.max_calls,
                                        max_reserved_tokens=args.max_reserved_tokens,
                                        prompt_version=args.prompt_version, history=args.history,
-                                       first_pass=args.first_pass)))
+                                       first_pass=args.first_pass,
+                                       transport_failed_run=args.transport_failed_run,
+                                       campaign_token_limit=args.campaign_token_limit)))
 
 
 if __name__ == "__main__":

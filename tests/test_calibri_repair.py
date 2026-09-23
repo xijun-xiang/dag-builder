@@ -7,11 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from dag_builder.client import CallFailure
 from dag_builder.calibri_normalize import assemble_graph, normalize
 from dag_builder.calibri_pipeline import CALIBRIPipeline, prepare
 from dag_builder.calibri_repair import (
-    CALIBRIRepairPipeline, PROTOCOL, REPAIR_CHECKS, STEP_FIELDS,
+    CALIBRIRepairPipeline, CHECKED_PROTOCOL, PROTOCOL, REPAIR_CHECKS, STEP_FIELDS,
     NoDependencyProposal, _failed_seed, apply_repair, prepare_repair, validate_repair_audit,
+    verify_repair,
 )
 from dag_builder.stages import prompt
 from dag_builder.storage import digest, read_json, write_once
@@ -58,6 +60,41 @@ def repair_outputs(outputs):
 
 
 class RepairContractTests(unittest.TestCase):
+    def test_dns_only_paused_first_pass_can_be_recovered_without_refund(self):
+        class DNSFailureClient:
+            def complete(self, request):
+                raise CallFailure("uncertain_remote_state", transport_kind="curl_exit_6")
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            parent, _ = failed_parent(root)
+            failed = root / "dns-failed"
+            prepare_repair(parent, failed, prompt_version=CHECKED_PROTOCOL, first_pass=True)
+            failed_config = config(prompt_version=CHECKED_PROTOCOL, max_calls=9,
+                                   max_reserved_tokens=1200000)
+            outcome = CALIBRIRepairPipeline(failed, failed_config, DNSFailureClient(),
+                                            resilient=True).run()
+            self.assertTrue(outcome["global_stop"])
+            self.assertEqual(outcome["attempt_count"], 1)
+            write_once(failed / "completion.json", {"status": "paused"})
+            recovered = root / "recovered"
+            selection = prepare_repair(parent, recovered, prompt_version=CHECKED_PROTOCOL,
+                                       first_pass=True, transport_failed_run=failed,
+                                       campaign_token_limit=32_000_000,
+                                       max_calls=3, max_reserved_tokens=300000)
+            self.assertEqual(selection["selected_count"], 1)
+            recovered_config = config(prompt_version=CHECKED_PROTOCOL, max_calls=3,
+                                      max_reserved_tokens=300000)
+            self.assertEqual(len(verify_repair(recovered, recovered_config)), 1)
+            proof = read_json(recovered / "calibri-normalization-manifest.json")
+            self.assertGreater(proof["prior_reserved_tokens"],
+                               read_json(failed / "calibri-normalization-manifest.json")["prior_reserved_tokens"])
+            error = next((recovered / "transport-history").glob(
+                "items/*/repair/attempt-*/error.json"))
+            error.write_text("{}")
+            with self.assertRaisesRegex(ValueError, "DNS transport evidence changed"):
+                verify_repair(recovered, recovered_config)
+
     def test_unparseable_dependency_response_is_not_a_repair_seed(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
