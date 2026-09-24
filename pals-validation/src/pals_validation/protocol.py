@@ -45,6 +45,8 @@ def system_prompt(case, generation_prompt_version="v1"):
 def question(case):
     if case.get("task_type") in ("humaneval", "livecodebench"):
         return case["question"]  # Preserve code-task formatting, including visible starter code.
+    if case.get("task_type") == "gsm8k":
+        return case["question"]  # Open-answer math; never fabricate A-D choices.
     return case["question"] + "\n\n" + "\n".join(
         f"{letter}. {text}" for letter, text in zip("ABCD", case["choices"]))
 

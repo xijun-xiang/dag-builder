@@ -17,7 +17,7 @@ def main():
     p.add_argument("--seed", type=int, default=20260915)
     p.add_argument("--expected-sha256")
     p.add_argument("--parent-probe", action="store_true")
-    p.add_argument("--benchmark", choices=("gpqa", "humaneval", "livecodebench"), default="gpqa")
+    p.add_argument("--benchmark", choices=("gpqa", "humaneval", "livecodebench", "gsm8k", "mmlu"), default="gpqa")
     p = commands.add_parser("init")
     p.add_argument("--prepared", required=True)
     p.add_argument("--config", required=True)

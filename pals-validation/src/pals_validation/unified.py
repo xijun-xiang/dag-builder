@@ -3,11 +3,54 @@
 from .io import digest
 
 
+MMLU_SUBSETS = frozenset({
+    "abstract_algebra", "college_mathematics", "elementary_mathematics",
+    "high_school_mathematics", "high_school_statistics", "high_school_psychology",
+    "professional_psychology", "sociology", "human_sexuality",
+})
+
+
+def _normalize_gsm8k_mmlu(record, benchmark, steps):
+    """Validate the two released reasoning-task formats without repairing their DAGs."""
+    problem, answer, source = record["problem"], record["answer"], record["provenance"]
+    review = record["review"]
+    subset, row = source["subset"], source["source_row"]
+    if (not isinstance(record.get("item_id"), str) or not record["item_id"].strip()
+            or review.get("source_status") != "model_accepted"
+            or source.get("split") != "test" or problem.get("entry_point") is not None
+            or record["dag"]["nodes"][-1]["kind"] != "answer"):
+        raise ValueError("Invalid unified reasoning-task identity or answer boundary")
+    if benchmark == "gsm8k":
+        if (source.get("dataset") != "openai/gsm8k" or subset != "main"
+                or source.get("source_id") != f"openai/gsm8k:main:test:{row}"
+                or problem.get("domain") != "grade_school_math"
+                or problem.get("choices") is not None
+                or answer.get("kind") != "text"
+                or not isinstance(answer.get("value"), str) or not answer["value"].strip()):
+            raise ValueError("Invalid unified GSM8K problem or provenance")
+        choices = None
+    else:
+        choices = problem.get("choices")
+        if (source.get("dataset") != "cais/mmlu" or subset not in MMLU_SUBSETS
+                or source.get("source_id") != f"cais/mmlu:{subset}:test:{row}"
+                or problem.get("domain") != subset
+                or not isinstance(choices, list) or len(choices) != 4
+                or any(not isinstance(choice, str) or not choice.strip() for choice in choices)
+                or answer.get("kind") != "choice" or answer.get("value") not in ("A", "B", "C", "D")):
+            raise ValueError("Invalid unified MMLU problem or provenance")
+    return {"item_id": record["item_id"], "source_row": row, "source_id": source["source_id"],
+            "source_dag_sha256": source.get("source_dag_sha256"), "domain": problem["domain"],
+            "question": problem["question"], "choices": choices, "steps": steps,
+            "task_type": benchmark, "subset": subset, "adapter": "pals_dag_unified_v1",
+            "human_approved": review["human_approved"]}
+
+
 def normalize_unified(record, benchmark):
     from .data import validated_steps
 
     expected = {"gpqa": "gpqa_diamond", "humaneval": "humaneval",
-                "livecodebench": "livecodebench_v6"}.get(benchmark)
+                "livecodebench": "livecodebench_v6", "gsm8k": "gsm8k",
+                "mmlu": "mmlu"}.get(benchmark)
     if expected is None or record.get("schema_version") != "pals_dag_unified_v1":
         raise ValueError("Unknown unified benchmark or schema version")
     if set(record) != {"schema_version", "item_id", "benchmark", "problem", "answer",
@@ -15,9 +58,11 @@ def normalize_unified(record, benchmark):
         raise ValueError("Unified record fields or benchmark mismatch")
     problem, answer, graph = record["problem"], record["answer"], record["dag"]
     review, source = record["review"], record["provenance"]
+    expected_subset = {"livecodebench": "v6", "gsm8k": "main"}.get(benchmark, expected)
     if (review.get("model_accepted") is not True or type(review.get("human_approved")) is not bool
             or not isinstance(review.get("source_status"), str)
-            or source.get("subset") != ("v6" if benchmark == "livecodebench" else expected)
+            or (benchmark != "mmlu" and source.get("subset") != expected_subset)
+            or (benchmark == "mmlu" and source.get("subset") not in MMLU_SUBSETS)
             or not isinstance(source.get("source_row"), int)
             or type(source["source_row"]) is bool
             or source["source_row"] < 0):
@@ -32,6 +77,8 @@ def normalize_unified(record, benchmark):
     steps = validated_steps(nodes, minimum=1 if benchmark in ("humaneval", "livecodebench") else 2)
     if not isinstance(problem.get("question"), str) or not problem["question"].strip():
         raise ValueError("Missing question")
+    if benchmark in ("gsm8k", "mmlu"):
+        return _normalize_gsm8k_mmlu(record, benchmark, steps)
     if benchmark == "gpqa":
         if (answer.get("kind") != "choice" or answer.get("value") not in ("A", "B", "C", "D")
                 or not isinstance(problem.get("choices"), list) or len(problem["choices"]) != 4

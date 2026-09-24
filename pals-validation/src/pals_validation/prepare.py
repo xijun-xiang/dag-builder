@@ -68,11 +68,15 @@ def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None
     for name, payload in payloads.items():
         save(output / name, payload)
     protocols = {"gpqa": VERSION, "humaneval": "humaneval-validation-v1",
-                 "livecodebench": "livecodebench-validation-v1"}
+                 "livecodebench": "livecodebench-validation-v1",
+                 "gsm8k": "gsm8k-unified-validation-v1", "mmlu": "mmlu-unified-validation-v1"}
+    choices_policy = ("always_included_in_v1" if benchmark in ("gpqa", "mmlu") else
+                      "none_open_answer" if benchmark == "gsm8k" else
+                      "not_applicable_original_code_prompt")
     manifest = {"protocol": protocols[benchmark],
                 "source_sha256": source_hash, "selection_seed": seed,
                 "parent_probe": parent_probe, "e2_policy": "one_hash_selected_target_ancestor_prefix",
-                "question_choices": "always_included_in_v1" if benchmark == "gpqa" else "not_applicable_original_code_prompt",
+                "question_choices": choices_policy,
                 "questions": len(cases),
                 "counts": {k: sum(bool(r[k]) for r in inventory)
                            for k in ("legal", "original_break", "forest_break", "fair_pair", "e2")},
