@@ -18,6 +18,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from pals_validation.data import normalize  # noqa: E402
+from pals_validation.e1_overrides import BreakOverrides  # noqa: E402
 from pals_validation.graph import breaking, forest  # noqa: E402
 
 
@@ -99,14 +100,17 @@ def read_decisions(data: bytes) -> tuple[str, dict[str, dict[str, str]]]:
     return protocol, exclusions
 
 
-def e1_primary_parent(record: dict, seed: int) -> tuple[dict, bool, str]:
-    """Replay the *existing* chosen E1 operator; never choose a new edge."""
+def e1_primary_parent(record: dict, seed: int,
+                      overrides: BreakOverrides | None = None) -> tuple[dict, bool, str]:
+    """Replay default E1 or one independently reviewed, existing direct edge."""
     benchmark = "gsm8k" if record["benchmark"] == "gsm8k" else "mmlu"
     case = normalize(record, benchmark)
     steps = case["steps"]
     serial = forest(steps, seed, case["item_id"])
     selected = breaking(steps, serial["baseline"], seed,
                         case["item_id"], "forest_break")
+    if overrides and case["item_id"] in overrides.cohort:
+        selected = overrides.select(case["item_id"], steps, serial["baseline"], selected)
     if serial["legal"] is None or selected is None:
         raise ValueError(f"Audited E1 candidate lost its selected fair pair: {case['item_id']}")
     if len(selected["violated_edges"]) != 1:
@@ -117,17 +121,22 @@ def e1_primary_parent(record: dict, seed: int) -> tuple[dict, bool, str]:
                   "kind": parent["kind"], "source_field": parent["source_field"]}
     eligible = (parent["kind"] in PRIMARY_E1_PARENT_KINDS
                 and parent["source_field"] == "solution")
-    reason = ("selected_parent_solution_derived_or_knowledge" if eligible
+    reason = ("reviewed_existing_solution_edge_override" if eligible and overrides
+              and case["item_id"] in overrides.edges else
+              "selected_parent_solution_derived_or_knowledge" if eligible
               else "selected_parent_not_solution_derived_or_knowledge")
     return provenance, eligible, reason
 
 
-def freeze(audit_dir: Path, decisions_path: Path, output_dir: Path) -> dict:
+def freeze(audit_dir: Path, decisions_path: Path, output_dir: Path,
+           e1_break_overrides: Path | None = None) -> dict:
     audit_raw = (audit_dir / "manifest.json").read_bytes()
     audit = json.loads(audit_raw)
     if (audit.get("protocol") != "coworker-dag-conservative-audit-v1"
             or audit.get("delivered_total") != 1539):
         raise ValueError("Unexpected audit protocol or denominator")
+    overrides = (BreakOverrides(e1_break_overrides, "mmlu", audit["selection_seed"])
+                 if e1_break_overrides is not None else None)
     flow = read_verified(audit_dir, audit, "flow_1539.jsonl")
     if len(flow) != 1539 or len({row["item_id"] for row in flow}) != len(flow):
         raise ValueError("Incomplete or duplicate flow")
@@ -165,12 +174,24 @@ def freeze(audit_dir: Path, decisions_path: Path, output_dir: Path) -> dict:
 
     candidate_by_id = {arm: {row["item_id"]: row for row in candidates[arm]}
                        for arm in EXPERIMENTS}
-    e1_parent = {row["item_id"]: e1_primary_parent(row, audit["selection_seed"])
+    if overrides:
+        for item_id in overrides.cohort:
+            row = candidate_by_id["e1"].get(item_id)
+            flow_entry = flow_by_id.get(item_id)
+            if (row is None or flow_entry is None
+                    or flow_entry["package"] != "mmlu_psych_social"):
+                raise ValueError(f"Reviewed E1 override identity is not a psych fair pair: {item_id}")
+            overrides.check_record(row)
+        overrides.check_complete()
+    e1_parent = {row["item_id"]: e1_primary_parent(row, audit["selection_seed"], overrides)
                  for row in candidates["e1"]}
     included_secondary = {row["item_id"] for row in candidates["e1"]
                           if flow_by_id[row["item_id"]]["source_id"] not in exclusions["e1"]}
     included = {
-        "e1": {item for item in included_secondary if e1_parent[item][1]},
+        "e1": {item for item in included_secondary if e1_parent[item][1]
+               and (overrides is None
+                    or flow_by_id[item]["package"] != "mmlu_psych_social"
+                    or item in overrides.cohort)},
         "e2": {row["item_id"] for row in candidates["e2"]
                if flow_by_id[row["item_id"]]["source_id"] not in exclusions["e2"]},
     }
@@ -189,7 +210,7 @@ def freeze(audit_dir: Path, decisions_path: Path, output_dir: Path) -> dict:
         source_id, item = row["source_id"], row["item_id"]
         parent, primary_eligible, primary_reason = e1_parent.get(
             item, (None, False, "not_e1_mechanical_candidate"))
-        flow_out.append({
+        entry = {
             **row,
             "e1_selected_break_parent": parent,
             "e1_primary_eligibility": primary_eligible,
@@ -206,7 +227,17 @@ def freeze(audit_dir: Path, decisions_path: Path, output_dir: Path) -> dict:
             "e2_decision": ("not_mechanically_eligible" if item not in candidate_by_id["e2"]
                             else "semantic_exclusion" if source_id in exclusions["e2"]
                             else "included"),
-        })
+        }
+        if overrides:
+            entry["e1_reviewed_psych_cohort"] = item in overrides.cohort
+            entry["e1_reviewed_break_override"] = item in overrides.edges
+            if (flow_by_id[item]["package"] == "mmlu_psych_social"
+                    and item in candidate_by_id["e1"]
+                    and item not in overrides.cohort
+                    and source_id not in exclusions["e1"]):
+                entry["e1_primary_eligibility"] = False
+                entry["e1_primary_eligibility_reason"] = "psych_not_in_reviewed_e1_cohort"
+        flow_out.append(entry)
     outputs["flow_1539.jsonl"] = jsonl(flow_out)
     files = {name: {"records": len(read_jsonl(data)) if data else 0,
                     "sha256": sha(data)} for name, data in outputs.items()}
@@ -225,6 +256,17 @@ def freeze(audit_dir: Path, decisions_path: Path, output_dir: Path) -> dict:
         "e1_mechanical_secondary": "same selected operator; semantic exclusions applied; not primary claim",
         "selection_seed": audit["selection_seed"],
     }
+    if overrides:
+        result["protocol"] = "coworker-pals-frozen-synthetic-cohort-v3-psych-e1-overrides"
+        result["e1_primary_rule"] = (
+            "default solution-derived/knowledge parent for GSM8K and MMLU math; "
+            "MMLU psychology/social restricted to manifest-locked reviewed cohort "
+            "with optional existing direct-edge forest break override"
+        )
+        result["e1_break_overrides"] = {
+            **overrides.provenance((Path(__file__),)),
+            "psych_primary_limit": "only_exact_reviewed_cohort",
+        }
     if not output_dir.parent.is_dir():
         raise ValueError("Create the private output parent directory before freezing")
     output_dir.mkdir(mode=0o700, exist_ok=False)
@@ -240,9 +282,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit-dir", type=Path, required=True)
     parser.add_argument("--decisions", type=Path, required=True)
+    parser.add_argument("--e1-break-overrides", type=Path,
+                        help="Score-blind, source-record-locked MMLU psychology E1 edges")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    print(json.dumps(freeze(args.audit_dir, args.decisions, args.output),
+    print(json.dumps(freeze(args.audit_dir, args.decisions, args.output,
+                            args.e1_break_overrides),
                      ensure_ascii=False, indent=2))
 
 

@@ -89,6 +89,9 @@ def _init_run(prepared, config_path, output, experiment, shards):
         raise ValueError("Invalid experiment/shard count")
     manifest = read(prepared / "manifest.json")
     verify(prepared, manifest["files"])
+    if (manifest.get("frozen_source_experiment") is not None
+            and manifest["frozen_source_experiment"] != experiment):
+        raise ValueError("Frozen cohort source experiment does not match requested run")
     jobs = []
     for base in read(prepared / "jobs.json"):
         if base["kind"] != experiment:

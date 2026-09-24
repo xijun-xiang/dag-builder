@@ -72,3 +72,49 @@ human approval, and a solution-derived sentence may still repeat the question.
 All frozen files remain model-reviewed *synthetic reference* DAGs, not human
 or official gold. The original benchmark-to-delivery selection flow is absent
 and must be reported as unavailable unless obtained independently.
+
+## Narrow MMLU psychology E1 break-edge override
+
+The preceding primary rule describes the *default* freezer/operator. A separate
+score-blind review found six psychology/social records whose default broken
+edge was weak or already present in the question/choices but another **existing
+adjacent direct solution edge** in the same forest baseline was usable. The
+optional `prepare --e1-break-overrides FILE.json` protocol is restricted to a
+manifest-pinned MMLU psychology/social cohort; it is not a general mechanism
+for selecting the largest PALS effect.
+
+The JSON schema `pals_mmlu_psych_e1_break_overrides_v1` has exactly
+`schema_version`, `benchmark` (`mmlu`), `selection_seed`, `cohort`, and
+`overrides`. Every `cohort` entry has `item_id`, `source_id`, and the original
+`source_record_sha256`; every override has `item_id`, `parent_id`, and
+`target_id`. The cohort must exactly match the prepared source, with unique
+identities. The six overrides are a subset of the cohort and may only replace
+`forest_break` by swapping an adjacent parent→target pair after the fixed first
+node. The pair must be an existing source-DAG direct edge, the parent must be
+solution-derived or knowledge, and the swap must invert exactly that edge.
+Source DAG, baseline, legal order, original break, and E2 anchor remain
+unchanged. A hash mismatch or unused override fails preparation.
+
+Pass the **same JSON** first to `freeze_coworker_cohort.py
+--e1-break-overrides` and then to `pals_validation.cli prepare
+--e1-break-overrides` for the frozen `e1-mmlu_psych_social.jsonl`. With this
+option, freeze emits `coworker-pals-frozen-synthetic-cohort-v3-psych-e1-overrides`:
+only manifest-listed psychology/social E1 questions can enter the primary
+cohort; all other psychology/social fair pairs remain secondary or excluded.
+GSM8K, MMLU math, and E2 retain their usual selection rules. Preparation
+checks the frozen release file hash and selection seed for every E1/E2 cohort,
+records the release manifest hash and source experiment, and refuses an E1 run
+from an E2 cohort or vice versa. It also checks the override hash and refuses
+the psychology E1 file if the override JSON is missing or different. This
+protection applies to the release file in its original directory alongside
+`manifest.json`; do not detach or rename it before preparing.
+
+Prepared `selection.json` preserves the default breaking choice in
+`forest_break_before_override` for each changed question. The prepared
+manifest marks `+mmlu-psych-e1-break-overrides-v1` and records hashes of the
+source cohort, override manifest, outputs, and selection-related code. Omitting
+the flag leaves all existing behavior and protocol names unchanged. The
+reviewed 11-question cohort and its six override decisions are recorded in
+the private experiment artifacts; the Git repository does not include private
+questions or model-reviewed source rows. This small cohort is a diagnostic E1
+subset, not a claim that all 594 psychology/social source questions passed.

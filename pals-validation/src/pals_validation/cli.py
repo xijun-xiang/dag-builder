@@ -18,6 +18,7 @@ def main():
     p.add_argument("--expected-sha256")
     p.add_argument("--parent-probe", action="store_true")
     p.add_argument("--benchmark", choices=("gpqa", "humaneval", "livecodebench", "gsm8k", "mmlu"), default="gpqa")
+    p.add_argument("--e1-break-overrides", help="Frozen, score-blind MMLU psychology E1 edge manifest")
     p = commands.add_parser("init")
     p.add_argument("--prepared", required=True)
     p.add_argument("--config", required=True)
@@ -32,7 +33,8 @@ def main():
     p.add_argument("--output", required=True)
     args = parser.parse_args()
     if args.command == "prepare":
-        result = prepare(args.source, args.output, args.seed, args.parent_probe, args.expected_sha256, args.benchmark)
+        result = prepare(args.source, args.output, args.seed, args.parent_probe,
+                         args.expected_sha256, args.benchmark, args.e1_break_overrides)
     elif args.command == "init":
         result = init_run(args.prepared, args.config, args.output, args.experiment, args.shards)
     elif args.command == "worker":

@@ -14,6 +14,8 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 from pals_validation.io import digest  # noqa: E402
+from pals_validation.prepare import prepare  # noqa: E402
+from pals_validation.run import init_run  # noqa: E402
 
 
 def record_for(index):
@@ -25,7 +27,7 @@ def record_for(index):
                  else f"cais/mmlu:{subset}:test:{index}")
     # Two length-2 branches converge, so the unchanged forest operator yields
     # a legal sibling swap and a deterministic one-edge inversion.
-    solution_origin = index < 3
+    solution_origin = index < 3 or index == 5
     nodes = []
     for node_id, kind, parents in ((1, "given", []), (2, "derived", [1]),
                                    (3, "knowledge" if solution_origin else "given", []),
@@ -49,7 +51,8 @@ def record_for(index):
                    "source_status": "model_accepted"},
         "provenance": {"dataset": "openai/gsm8k" if gsm8k else "cais/mmlu",
                        "subset": subset, "split": "test", "source_row": index,
-                       "source_id": source_id},
+                       "source_id": source_id,
+                       "source_record_sha256": f"{index + 1:064x}"},
     }
 
 
@@ -139,6 +142,28 @@ class FreezeCoworkerCohortTests(unittest.TestCase):
         self.assertEqual(flow[0]["e1_decision"], "semantic_exclusion")
         self.assertEqual(flow[0]["e2_decision"], "semantic_exclusion")
 
+    def test_frozen_source_binds_hash_seed_and_experiment(self):
+        self.write_decisions()
+        release = self.base / "release"
+        MODULE.freeze(self.audit, self.decisions, release)
+        source = release / "e2-gsm8k.jsonl"
+        prepared = self.base / "prepared-e2"
+        manifest = prepare(source, prepared, benchmark="gsm8k")
+        self.assertEqual(manifest["frozen_source_experiment"], "e2")
+        self.assertEqual(manifest["frozen_cohort"]["release_manifest_sha256"],
+                         MODULE.sha((release / "manifest.json").read_bytes()))
+        with self.assertRaisesRegex(ValueError, "selection seed mismatch"):
+            prepare(source, self.base / "wrong-seed", seed=7, benchmark="gsm8k")
+        config = Path(__file__).resolve().parents[1] / "configs/mock.json"
+        with self.assertRaisesRegex(ValueError, "source experiment"):
+            init_run(prepared, config, self.base / "wrong-experiment", "e1", 1)
+        self.assertFalse((self.base / "wrong-experiment").exists())
+        self.assertGreater(init_run(prepared, config, self.base / "right-experiment",
+                                    "e2", 1)["jobs"], 0)
+        source.write_bytes(source.read_bytes() + b"\n")
+        with self.assertRaisesRegex(ValueError, "source file hash mismatch"):
+            prepare(source, self.base / "wrong-hash", benchmark="gsm8k")
+
     def test_unknown_exclusion_hash_tampering_and_missing_candidate_fail(self):
         self.write_decisions({"not_in_source": "unknown"})
         with self.assertRaisesRegex(ValueError, "Unknown"):
@@ -173,6 +198,64 @@ class FreezeCoworkerCohortTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Candidate set differs"):
             MODULE.freeze(self.audit, self.decisions, self.base / "bad5")
         self.assertFalse((self.base / "bad5").exists())
+
+    def test_psych_override_is_score_blind_restricted_and_required_at_prepare(self):
+        self.write_decisions()
+        default = MODULE.freeze(self.audit, self.decisions, self.base / "default")
+        self.assertEqual(default["files"]["e1-mmlu_psych_social.jsonl"]["records"], 2)
+        row = record_for(2)
+        spec = {
+            "schema_version": "pals_mmlu_psych_e1_break_overrides_v1",
+            "benchmark": "mmlu", "selection_seed": 20260915,
+            "cohort": [{"item_id": row["item_id"],
+                        "source_id": row["provenance"]["source_id"],
+                        "source_record_sha256": row["provenance"]["source_record_sha256"]}],
+            "overrides": [{"item_id": row["item_id"], "parent_id": 4, "target_id": 5}],
+        }
+        override_path = self.base / "overrides.json"
+        override_path.write_text(json.dumps(spec), encoding="utf-8")
+        release = self.base / "reviewed"
+        result = MODULE.freeze(self.audit, self.decisions, release, override_path)
+        self.assertEqual(result["protocol"],
+                         "coworker-pals-frozen-synthetic-cohort-v3-psych-e1-overrides")
+        self.assertEqual(result["files"]["e1-mmlu_psych_social.jsonl"]["records"], 1)
+        self.assertEqual(result["e1_break_overrides"]["manifest_sha256"],
+                         MODULE.sha(override_path.read_bytes()))
+        flow = MODULE.read_jsonl((release / "flow_1539.jsonl").read_bytes())
+        self.assertEqual(flow[2]["e1_selected_break_parent"]["node_id"], 4)
+        self.assertEqual(flow[2]["e1_primary_eligibility_reason"],
+                         "reviewed_existing_solution_edge_override")
+        self.assertTrue(flow[2]["e1_in_frozen_cohort"])
+        self.assertFalse(flow[5]["e1_in_frozen_cohort"])
+        self.assertEqual(flow[5]["e1_primary_eligibility_reason"],
+                         "psych_not_in_reviewed_e1_cohort")
+        source = release / "e1-mmlu_psych_social.jsonl"
+        with self.assertRaisesRegex(ValueError, "requires its break override"):
+            prepare(source, self.base / "prepare-no-override", benchmark="mmlu")
+        changed = dict(spec)
+        changed["overrides"] = [{"item_id": row["item_id"], "parent_id": 3,
+                                 "target_id": 4}]
+        wrong_path = self.base / "wrong-overrides.json"
+        wrong_path.write_text(json.dumps(changed), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "manifest hash mismatch"):
+            prepare(source, self.base / "prepare-wrong-override", benchmark="mmlu",
+                    e1_break_overrides=wrong_path)
+        prepared = self.base / "prepare-reviewed"
+        manifest = prepare(source, prepared, benchmark="mmlu",
+                           e1_break_overrides=override_path)
+        self.assertEqual(manifest["questions"], 1)
+        self.assertEqual(manifest["e1_break_overrides"]["frozen_release_manifest_sha256"],
+                         MODULE.sha((release / "manifest.json").read_bytes()))
+        self.assertEqual(json.loads((prepared / "selection.json").read_text())[0]
+                         ["forest_break_override_edge"], [4, 5])
+        tampered = dict(spec)
+        tampered["cohort"] = [dict(spec["cohort"][0], source_record_sha256="f" * 64)]
+        tampered_path = self.base / "tampered-overrides.json"
+        tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "source-record identity mismatch"):
+            MODULE.freeze(self.audit, self.decisions, self.base / "tampered-release",
+                          tampered_path)
+        self.assertFalse((self.base / "tampered-release").exists())
 
 
 if __name__ == "__main__":
