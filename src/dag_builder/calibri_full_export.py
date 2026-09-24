@@ -88,6 +88,9 @@ def export(source, execution, continuation, repair, development_runs, output):
             "CPU execution/source offline proof missing")
     require(set(cpu) == set(candidates) and cpu_completion["passed"] == 91,
             "CPU validation cohort changed")
+    require(all(cpu[item_id][0]["code"] == item["reference_code"]
+                for item_id, item in candidates.items()),
+            "CPU-executed code differs from frozen CALIBRI reference")
     require(read_json(continuation / "offline-continuation-audit.json") == audit_continuation(continuation),
             "continuation audit changed")
     continued = {i["item_id"]: i for i in read_json(continuation / "items.json")}
@@ -127,12 +130,14 @@ def export(source, execution, continuation, repair, development_runs, output):
             if dag:
                 require(item["item_id"] == dag["item_id"]
                         and all(dag["source"].get(k) == item.get(k) for k in
-                                ("question_id", "question", "raw_output", "reference_code")),
+                                ("question_id", "question", "raw_output", "reference_code"))
+                        and dag["source"].get("execution_evidence", {}).get("status") == "passed",
                         "accepted DAG source changed")
                 accepted.append({"schema_version": PROTOCOL, "item_id": item_id,
-                                 "question_id": item["question_id"], "source": item,
+                                 "question_id": item["question_id"], "source": dag["source"],
                                  "dag": dag, "dag_sha256": digest(dag),
-                                 "cpu_result_sha256": digest(cpu[item_id][1]),
+                                 "cpu_result_sha256": dag["source"]["execution_evidence"]["result_sha256"],
+                                 "full_cpu_result_sha256": digest(cpu[item_id][1]),
                                  "model_accepted": True, "human_approved": False,
                                  "formal_eligible": False,
                                  "source_status": "calibri_derived_tested_reference"})

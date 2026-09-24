@@ -63,3 +63,9 @@ CPU 结果”，现改为核对 `sample_ids` 与 `held_without_cpu` 对原来源
 完整划分，只把实际通过的七题纳入构图候选，其余 53 题显式列为
 `not_independently_cpu_tested`。从七题中以冻结规则再选五题作为 DAG
 小样本；这只是准备，不代表模型语义审核已通过。
+
+五题 canary 已完成，10 次模型请求全部有正式 `content` 和 `stop`；模型审核
+接受 1 题，另 4 题待复核。`dag_builder.t2ance_audit` 离线重放冻结输入、
+请求/响应、代码快照、CPU 证据和接受图，并验证原有 24 请求、200 万保守
+预留 token 上限。接受题仍是 t2ance 派生的同模型审核候选，不是人工或
+官方 gold。其余 53 题没有因抽样通过而自动取得 CPU 身份。

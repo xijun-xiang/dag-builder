@@ -98,13 +98,25 @@ def convert_record(record, benchmark, source_file_sha256):
         answer = {"kind": "code", "value": source["canonical_solution"]}
         _require(nodes[-1]["statement"] == answer["value"], "HumanEval answer/code mismatch")
     else:
-        _require(record.get("schema_version") == "calibri-lcb-v6-model-candidates-v1"
-                 and record.get("status", "model_accepted") == "model_accepted"
-                 and record.get("source_status") == "calibri_derived_tested_reference"
+        source_status = record.get("source_status")
+        schema_version = record.get("schema_version")
+        _require((schema_version == "calibri-lcb-v6-model-candidates-v1"
+                  and source_status == "calibri_derived_tested_reference")
+                 or (schema_version == "lcb-v6-source-stratified-candidates-v1"
+                     and source_status in ("calibri_derived_tested_reference",
+                                           "t2ance_derived_tested_reference")),
+                 "LCB source protocol mismatch")
+        _require(record.get("status", "model_accepted") == "model_accepted"
                  and record.get("human_approved") is False
                  and record.get("formal_eligible") is False
                  and source.get("subset") == "v6"
                  and source.get("task_type") == "livecodebench", "LCB source contract mismatch")
+        if source_status == "t2ance_derived_tested_reference":
+            _require(isinstance(source_dag, dict)
+                     and source.get("reference_origin") == "t2ance_model_output"
+                     and source_dag.get("construction_protocol") == "t2ance-lcb-normalize-v1"
+                     and source_dag.get("normalization", {}).get("protocol") ==
+                     "t2ance-lcb-normalize-v1", "t2ance protocol/source mismatch")
         _require(isinstance(source_dag, dict) and source_dag.get("source") == source
                  and source_dag.get("item_id") == item_id
                  and source_dag.get("formal_eligible") is False
@@ -126,7 +138,7 @@ def convert_record(record, benchmark, source_file_sha256):
         visible_question = source["question"] + ("\n\nStarter code:\n" + starter if starter else "")
         problem = {"question": visible_question, "domain": source["domain"],
                    "choices": None, "entry_point": source["entry_point"]}
-        # This is a CPU-tested CALIBRI-derived reference program, not official gold.
+        # This is a CPU-tested source-derived reference program, not official gold.
         answer = {"kind": "code", "value": source["reference_code"]}
         _require(nodes[-1]["statement"] == answer["value"], "LCB answer/code mismatch")
 
