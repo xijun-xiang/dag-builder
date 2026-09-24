@@ -8,6 +8,7 @@ outputs/
 artifacts/
 runs/
 logs/
+data/
 .env
 .env.*
 !.env.example

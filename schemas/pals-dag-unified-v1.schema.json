@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/xijun-xiang/dag-builder/blob/codex/livecodebench-pals-validation/schemas/pals-dag-unified-v1.schema.json",
+  "title": "PALS accepted step DAG, unified v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "item_id", "benchmark", "problem", "answer", "dag", "review", "provenance"],
+  "properties": {
+    "schema_version": {"const": "pals_dag_unified_v1"},
+    "item_id": {"$ref": "#/$defs/text"},
+    "benchmark": {"$ref": "#/$defs/text"},
+    "problem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question", "domain", "choices", "entry_point"],
+      "properties": {
+        "question": {"$ref": "#/$defs/text"},
+        "domain": {"$ref": "#/$defs/text"},
+        "choices": {"type": ["array", "null"], "items": {"$ref": "#/$defs/text"}},
+        "entry_point": {"$ref": "#/$defs/nullableText"}
+      }
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"enum": ["choice", "code", "text"]},
+        "value": {"$ref": "#/$defs/text"}
+      }
+    },
+    "dag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "nodes", "nodes_sha256"],
+      "properties": {
+        "schema_version": {"const": "pals_step_dag_v1"},
+        "nodes": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/node"}},
+        "nodes_sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_status", "model_accepted", "human_approved", "quality_status", "construction_protocol"],
+      "properties": {
+        "source_status": {"$ref": "#/$defs/text"},
+        "model_accepted": {"const": true},
+        "human_approved": {"type": "boolean"},
+        "quality_status": {"$ref": "#/$defs/nullableText"},
+        "construction_protocol": {"$ref": "#/$defs/nullableText"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataset", "subset", "split", "revision", "source_row", "source_id", "source_content_sha256", "source_schema_version", "source_file_sha256", "source_record_sha256", "source_dag_sha256"],
+      "properties": {
+        "dataset": {"$ref": "#/$defs/text"},
+        "subset": {"$ref": "#/$defs/text"},
+        "split": {"$ref": "#/$defs/text"},
+        "revision": {"$ref": "#/$defs/text"},
+        "source_row": {"type": "integer", "minimum": 0},
+        "source_id": {"$ref": "#/$defs/text"},
+        "source_content_sha256": {"$ref": "#/$defs/hash"},
+        "source_schema_version": {"$ref": "#/$defs/text"},
+        "source_file_sha256": {"$ref": "#/$defs/hash"},
+        "source_record_sha256": {"$ref": "#/$defs/hash"},
+        "source_dag_sha256": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]}
+      }
+    }
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "nullableText": {"anyOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "kind", "statement", "parents", "source_field", "source_quote", "justification"],
+      "properties": {
+        "node_id": {"type": "integer", "minimum": 1},
+        "kind": {"enum": ["given", "knowledge", "derived", "answer"]},
+        "statement": {"$ref": "#/$defs/text"},
+        "parents": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
+        "source_field": {"$ref": "#/$defs/text"},
+        "source_quote": {"$ref": "#/$defs/text"},
+        "justification": {"$ref": "#/$defs/text"}
+      }
+    }
+  }
+}

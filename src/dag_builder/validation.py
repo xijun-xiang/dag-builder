@@ -33,6 +33,29 @@ def validate_parents(value, nodes):
         else:
             require(bool(parents), "derived/answer node has no declared premise")
         mapping[node["node_id"]] = parents
+    ancestor_cache = {}
+
+    def ancestors(node_id):
+        if node_id not in ancestor_cache:
+            found, pending = set(), list(mapping[node_id])
+            while pending:
+                current = pending.pop()
+                if current not in found:
+                    found.add(current)
+                    pending.extend(mapping[current])
+            ancestor_cache[node_id] = found
+        return ancestor_cache[node_id]
+
+    for node_id, parents in mapping.items():
+        for parent in parents:
+            require(
+                not any(
+                    parent in ancestors(other)
+                    for other in parents
+                    if other != parent
+                ),
+                "transitively redundant direct dependency",
+            )
     ancestors, pending = set(), [ids[-1]]
     while pending:
         current = pending.pop()
