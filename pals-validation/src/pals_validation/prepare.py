@@ -18,6 +18,7 @@ def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None
     overrides = (BreakOverrides(e1_break_overrides, benchmark, seed)
                  if e1_break_overrides is not None else None)
     frozen_release_sha = None
+    frozen_compatible_experiments = None
     release_path = source.parent / "manifest.json"
     if release_path.is_file():
         release = read(release_path)
@@ -43,6 +44,19 @@ def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None
                 if release["e1_break_overrides"]["manifest_sha256"] != overrides.file_sha256:
                     raise ValueError("Frozen psychology E1 override manifest hash mismatch")
             frozen_release_sha = sha256(release_path)
+        elif (isinstance(release, dict)
+              and release.get("protocol") == "coworker-pals-full-delivery-v1"):
+            files = release.get("files")
+            file_entry = files.get(source.name) if isinstance(files, dict) else None
+            if (not isinstance(file_entry, dict)
+                    or file_entry.get("sha256") != source_hash
+                    or file_entry.get("benchmark") != benchmark):
+                raise ValueError("Full-delivery source file hash or benchmark mismatch")
+            if (release.get("selection_seed") != seed
+                    or release.get("compatible_experiments") != ["e1", "e2"]):
+                raise ValueError("Full-delivery seed or experiment compatibility mismatch")
+            frozen_release_sha = sha256(release_path)
+            frozen_compatible_experiments = release["compatible_experiments"]
     cases, jobs, inventory, selection = [], [], [], []
     seen = set()
     for record in read_jsonl(source):
@@ -123,10 +137,15 @@ def prepare(source, output, seed=20260915, parent_probe=False, expected_sha=None
                            for k in ("legal", "original_break", "forest_break", "fair_pair", "e2")},
                 "files": {name: sha256(output / name) for name in payloads}}
     if frozen_release_sha:
-        manifest["frozen_source_experiment"] = frozen_experiment
         manifest["frozen_cohort"] = {"release_manifest_sha256": frozen_release_sha,
                                      "source_file": source.name,
                                      "release_protocol": release["protocol"]}
+        if frozen_compatible_experiments is None:
+            manifest["frozen_source_experiment"] = frozen_experiment
+        else:
+            # A single, identical full-delivery source serves both arms.  Do not
+            # mislabel "scoreable" as an experiment in run._init_run's arm gate.
+            manifest["compatible_experiments"] = frozen_compatible_experiments
     if overrides:
         from . import data, e1_overrides, graph, io, unified
 

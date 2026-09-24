@@ -92,6 +92,12 @@ def _init_run(prepared, config_path, output, experiment, shards):
     if (manifest.get("frozen_source_experiment") is not None
             and manifest["frozen_source_experiment"] != experiment):
         raise ValueError("Frozen cohort source experiment does not match requested run")
+    compatible = manifest.get("compatible_experiments")
+    if compatible is not None and (
+            not isinstance(compatible, list)
+            or compatible != ["e1", "e2"]
+            or experiment not in compatible):
+        raise ValueError("Frozen cohort experiment compatibility mismatch")
     jobs = []
     for base in read(prepared / "jobs.json"):
         if base["kind"] != experiment:
