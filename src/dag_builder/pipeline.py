@@ -90,6 +90,7 @@ class Pipeline:
         retry_safe_failures=False,
         isolate_uncertain_failures=False,
         resilient=False,
+        runtime_workers=None,
     ):
         if type(self) is Pipeline and config.prompt_version in (
             "gpqa-repair-v1",
@@ -100,24 +101,75 @@ class Pipeline:
         self.config, self.client = config, client
         self.retry_safe_failures = retry_safe_failures
         self.isolate_uncertain_failures = isolate_uncertain_failures
-        if resilient and (isolate_uncertain_failures or retry_safe_failures):
-            raise ValueError(
-                "resilient mode cannot be combined with legacy retry flags"
-            )
         self.resilient = resilient
+        # Runtime pressure testing may exceed the conservative frozen config
+        # worker count; the caller still controls the actual safe ceiling.
+        worker_limit = 32
+        if runtime_workers is not None and (
+            type(runtime_workers) is not int
+            or not 1 <= runtime_workers <= worker_limit
+        ):
+            raise ValueError("invalid runtime worker count")
+        self.runtime_workers = runtime_workers or config.workers
         self._new_uncertain_failures = 0
         self._budget_lock = threading.Lock()
         self._stop = threading.Event()
         self.calls = 0
         self.reserved_tokens = 0
+        self._accounted_attempt_tokens = {}
+
+    @staticmethod
+    def _reported_tokens(response):
+        total = response.get("usage", {}).get("total_tokens")
+        return total if type(total) is int and total >= 0 else None
+
+    def _attempt_tokens(self, attempt, request=None, response=None):
+        request = request or read_json(attempt / "request.json")
+        accounted = request["reserved_tokens"]
+        response_file = attempt / "response.json"
+        if response is None and response_file.exists():
+            response = read_json(response_file)["body"]
+        if response is not None:
+            reported = self._reported_tokens(response)
+            if reported is not None:
+                accounted = max(accounted, reported)
+        return accounted
+
+    def _account_response(self, attempt, response):
+        """Reconcile a returned or cached response with the global token budget."""
+        accounted = self._attempt_tokens(attempt, response=response)
+        with self._budget_lock:
+            previous = self._accounted_attempt_tokens.get(attempt)
+            if previous is None:
+                self.calls += 1
+                previous = 0
+            if accounted > previous:
+                self.reserved_tokens += accounted - previous
+                self._accounted_attempt_tokens[attempt] = accounted
+            if self.reserved_tokens > self.config.max_reserved_tokens:
+                self._stop.set()
+
+    def _cached_response(self, attempt, request_payload):
+        request = read_json(attempt / "request.json")
+        if request["payload"] != request_payload:
+            raise ValueError("cached request does not match current payload")
+        response = read_json(attempt / "response.json")["body"]
+        self._account_response(attempt, response)
+        return response
 
     def _restore_budget(self):
         self.calls = 0
         self.reserved_tokens = 0
+        self._accounted_attempt_tokens = {}
         for path in self.root.glob("items/*/*/attempt-*/request.json"):
             request = read_json(path)
+            attempt = path.parent
+            accounted = self._attempt_tokens(attempt, request=request)
             self.calls += 1
-            self.reserved_tokens += request["reserved_tokens"]
+            self.reserved_tokens += accounted
+            self._accounted_attempt_tokens[attempt] = accounted
+        if self.reserved_tokens > self.config.max_reserved_tokens:
+            self._stop.set()
 
     def _reserve(self, path, request_payload):
         # Conservative byte-based input allowance, not a tokenizer measurement.
@@ -146,6 +198,7 @@ class Pipeline:
             )
             self.calls += 1
             self.reserved_tokens += allowance
+            self._accounted_attempt_tokens[path] = allowance
 
     def _call(self, directory, request_payload):
         if self.resilient:
@@ -153,10 +206,7 @@ class Pipeline:
         for index in range(self.config.rate_limit_retries + 1):
             attempt = directory / f"attempt-{index:02d}"
             if (attempt / "response.json").exists():
-                cached = read_json(attempt / "request.json")
-                if cached["payload"] != request_payload:
-                    raise ValueError("cached request does not match current payload")
-                return read_json(attempt / "response.json")["body"]
+                return self._cached_response(attempt, request_payload)
             if (attempt / "error.json").exists():
                 if read_json(attempt / "request.json")["payload"] != request_payload:
                     raise ValueError("cached failure request mismatch")
@@ -199,12 +249,7 @@ class Pipeline:
                     self._stop.set()
                 raise
             write_once(attempt / "response.json", {"ended_at": now(), "body": response})
-            total = response.get("usage", {}).get("total_tokens")
-            if (
-                type(total) is int
-                and total > read_json(attempt / "request.json")["reserved_tokens"]
-            ):
-                self._stop.set()  # API accounting exceeded the preflight allowance.
+            self._account_response(attempt, response)
             return response
         raise CallFailure("retry_limit_reached")
 
@@ -224,9 +269,14 @@ class Pipeline:
                 if read_json(request_file)["payload"] != request_payload:
                     raise ValueError("cached request does not match current payload")
                 if (attempt / "response.json").exists():
-                    return read_json(attempt / "response.json")["body"]
+                    return self._cached_response(attempt, request_payload)
                 if (attempt / "error.json").exists():
                     saved = read_json(attempt / "error.json")
+                    if (
+                        self.retry_safe_failures
+                        and saved["category"] == "authentication"
+                    ):
+                        continue
                     if saved["category"] not in transient:
                         raise CallFailure(saved["category"], saved.get("http_status"))
                 # A request without response/error is also unknown, not free.
@@ -254,17 +304,18 @@ class Pipeline:
                     continue
                 raise
             write_once(attempt / "response.json", {"ended_at": now(), "body": response})
-            total = response.get("usage", {}).get("total_tokens")
-            if (
-                type(total) is int
-                and total > read_json(request_file)["reserved_tokens"]
-            ):
-                self._stop.set()
+            self._account_response(attempt, response)
             return response
         raise CallFailure("transient_retries_exhausted")
 
     def stage(self, stage, item, results):
-        data = stage_input(stage, item, results, self.config.solution_source)
+        data = stage_input(
+            stage,
+            item,
+            results,
+            self.config.solution_source,
+            self.config.prompt_version,
+        )
         request_payload = payload(stage, data, self.config)
         return self.request_stage(
             stage,
@@ -273,7 +324,8 @@ class Pipeline:
             request_payload,
             lambda output: validate(stage, output, data, self.config.solution_source),
             native=stage == "solve"
-            and self.config.prompt_version == "mmlu-thinking-v1",
+            and self.config.prompt_version
+            in ("mmlu-thinking-v1", "mmlu-thinking-v2"),
         )
 
     def request_stage(
@@ -513,6 +565,8 @@ class Pipeline:
             write_once(self.root / "implementation.json", implementation())
             policy = {
                 "resilient": self.resilient,
+                "configured_workers": self.config.workers,
+                "runtime_workers": self.runtime_workers,
                 "isolate_uncertain_failures": self.isolate_uncertain_failures,
                 "retry_safe_failures": self.retry_safe_failures,
                 "max_lifetime_stage_attempts": 4 if self.resilient else None,
@@ -541,7 +595,7 @@ class Pipeline:
             if limit is not None and (type(limit) is not int or limit <= 0):
                 raise ValueError("limit must be positive")
             started, results = now(), []
-            with ThreadPoolExecutor(max_workers=self.config.workers) as pool:
+            with ThreadPoolExecutor(max_workers=self.runtime_workers) as pool:
                 futures = [
                     pool.submit(self.process, item, through) for item in selected
                 ]
@@ -565,6 +619,7 @@ class Pipeline:
                 "isolate_uncertain_failures": self.isolate_uncertain_failures,
                 "new_uncertain_failures": self._new_uncertain_failures,
                 "resilient": self.resilient,
+                "runtime_workers": self.runtime_workers,
                 "execution_policy": policy,
             }
             write_once(

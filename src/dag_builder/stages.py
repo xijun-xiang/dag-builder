@@ -26,6 +26,15 @@ THINKING_STAGES = ("solve", "structure_solution", *STAGES[1:])
 REFERENCE_STAGES = STAGES[1:]
 REPAIR_STAGES = ("repair", "justify", "review_repair")
 REVISION_STAGES = ("revise", "audit", "adjudicate")
+NATIVE_PROMPT_VERSIONS = ("mmlu-thinking-v1", "mmlu-thinking-v2")
+V2_STAGE_TOKEN_CAPS = {
+    "structure_solution": 2048,
+    "review_solution": 2048,
+    "atomize": 4096,
+    "dependencies": 2048,
+    "justify": 4096,
+    "review_dag": 4096,
+}
 
 
 def stages_for(config):
@@ -35,7 +44,7 @@ def stages_for(config):
         return REPAIR_STAGES
     if config.task_type == "gpqa":
         return REFERENCE_STAGES
-    return THINKING_STAGES if config.prompt_version == "mmlu-thinking-v1" else STAGES
+    return THINKING_STAGES if config.prompt_version in NATIVE_PROMPT_VERSIONS else STAGES
 
 
 def prompt(
@@ -49,15 +58,15 @@ def prompt(
         else REFERENCE_STAGES
         if task_type == "gpqa"
         else THINKING_STAGES
-        if version == "mmlu-thinking-v1"
+        if version in NATIVE_PROMPT_VERSIONS
         else STAGES
     )
     if stage not in allowed:
         raise ValueError("unknown stage or prompt version")
-    if task_type == "mmlu" and version not in ("v1", "mmlu-thinking-v1"):
+    if task_type == "mmlu" and version not in ("v1", *NATIVE_PROMPT_VERSIONS):
         raise ValueError("unsupported mmlu prompt version")
-    if task_type == "gsm8k" and version != "gsm8k-v1":
-        raise ValueError("gsm8k requires prompt version gsm8k-v1")
+    if task_type == "gsm8k" and version not in ("gsm8k-v1", "gsm8k-v2"):
+        raise ValueError("gsm8k requires a supported gsm8k prompt version")
     if task_type == "gpqa" and version not in (
         "gpqa-reference-v1",
         "gpqa-repair-v1",
@@ -78,8 +87,15 @@ def prompt(
         location = files("dag_builder").joinpath(
             "prompts", "gpqa-reference-v1", "justify.md"
         )
-    if version == "mmlu-thinking-v1" and not location.is_file():
-        location = files("dag_builder").joinpath("prompts", "v1", stage + ".md")
+    fallback_versions = {
+        "mmlu-thinking-v1": ("v1",),
+        "mmlu-thinking-v2": ("mmlu-thinking-v1", "v1"),
+        "gsm8k-v2": ("gsm8k-v1",),
+    }.get(version, ())
+    for fallback in fallback_versions:
+        if location.is_file():
+            break
+        location = files("dag_builder").joinpath("prompts", fallback, filename)
     return location.read_text(encoding="utf-8")
 
 
@@ -97,7 +113,13 @@ def reference_solution(item, results):
     return results["solve"]
 
 
-def stage_input(stage, item, results, solution_source="independent_generation"):
+def stage_input(
+    stage,
+    item,
+    results,
+    solution_source="independent_generation",
+    prompt_version=None,
+):
     data = {"question": public_question(item)}
     if item.get("task_type") == "gpqa":
         require(stage in REFERENCE_STAGES, "official-reference protocol has no solve")
@@ -107,6 +129,17 @@ def stage_input(stage, item, results, solution_source="independent_generation"):
                 f"choice_{label}": value
                 for label, value in zip("ABCD", item["choices"])
             },
+        }
+    elif (
+        item.get("task_type") == "mmlu"
+        and prompt_version == "mmlu-thinking-v2"
+        and stage in ("atomize", "review_dag")
+    ):
+        # Choices are public task input, not answer authority.  They are exposed
+        # only after solve so the DAG can prove the final label-to-text mapping.
+        data["reference_sources"] = {
+            f"choice_{label}": value
+            for label, value in zip("ABCD", item["choices"])
         }
     if stage == "structure_solution":
         data["native_solution"] = results["solve"]
@@ -135,7 +168,7 @@ def stage_input(stage, item, results, solution_source="independent_generation"):
 
 
 def payload(stage, data, config):
-    native = config.prompt_version == "mmlu-thinking-v1"
+    native = config.prompt_version in NATIVE_PROMPT_VERSIONS
     if native or config.task_type == "gpqa":
         # Explicit labels in every model request; preserve the original item bytes.
         data = dict(data, question=dict(data["question"]))
@@ -143,7 +176,12 @@ def payload(stage, data, config):
     request = {
         "model": config.model,
         "temperature": config.temperature,
-        "max_tokens": config.max_tokens,
+        "max_tokens": (
+            min(config.max_tokens, V2_STAGE_TOKEN_CAPS[stage])
+            if config.prompt_version == "mmlu-thinking-v2"
+            and stage in V2_STAGE_TOKEN_CAPS
+            else config.max_tokens
+        ),
         "messages": [
             {
                 "role": "system",
@@ -160,14 +198,21 @@ def payload(stage, data, config):
             },
         ],
     }
-    if config.thinking is not None:
-        request["thinking"] = {"type": config.thinking}
-    if config.thinking == "enabled":
+    thinking = config.thinking
+    reasoning_effort = config.reasoning_effort
+    if config.prompt_version == "mmlu-thinking-v2" and stage != "solve":
+        # Native reasoning is required only for solve. Fixed-schema transforms
+        # are cheaper and more reliable without hidden long-form reasoning.
+        thinking = "disabled"
+        reasoning_effort = None
+    if thinking is not None:
+        request["thinking"] = {"type": thinking}
+    if thinking == "enabled":
         request.pop(
             "temperature"
         )  # Official thinking mode ignores sampling temperature.
-    if config.reasoning_effort is not None:
-        request["reasoning_effort"] = config.reasoning_effort
+    if reasoning_effort is not None:
+        request["reasoning_effort"] = reasoning_effort
     if config.response_format is not None and not (native and stage == "solve"):
         request["response_format"] = {"type": config.response_format}
     return request

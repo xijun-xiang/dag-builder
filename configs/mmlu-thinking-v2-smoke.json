@@ -1,0 +1,17 @@
+{
+  "base_url": "https://proxy.infix-ai.xyz/v1/",
+  "model": "deepseek-v4-flash",
+  "key_env": "JUDGE_API_KEY",
+  "temperature": 0.0,
+  "max_tokens": 8192,
+  "timeout_seconds": 180,
+  "workers": 1,
+  "max_calls": 7,
+  "max_reserved_tokens": 200000,
+  "rate_limit_retries": 0,
+  "prompt_version": "mmlu-thinking-v2",
+  "response_format": "json_object",
+  "task_type": "mmlu",
+  "thinking": "enabled",
+  "reasoning_effort": "high"
+}

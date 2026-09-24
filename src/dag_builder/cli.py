@@ -83,6 +83,11 @@ def main():
             command.add_argument("--limit", type=int)
         if name == "run":
             command.add_argument(
+                "--workers",
+                type=int,
+                help="Runtime-only worker override; preserved in execution policy and does not change request payloads",
+            )
+            command.add_argument(
                 "--isolate-uncertain-failures",
                 action="store_true",
                 help="Skip uncertain items without retry; stop after 3 new uncertain failures",
@@ -152,6 +157,7 @@ def main():
                         args.retry_safe_failures,
                         args.isolate_uncertain_failures,
                         resilient=args.resilient,
+                        runtime_workers=args.workers,
                     )
                     result = runner.run(
                         args.limit, progress=progress, through=args.through
