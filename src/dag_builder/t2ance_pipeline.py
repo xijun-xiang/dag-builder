@@ -38,11 +38,22 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
             and digest(source_items) == manifest["items_sha256"], "source selection changed")
     cpu, completion = verify_execution(execution, expected_manifest)
     cpu_manifest = read_json(expected_manifest)
+    source_ids = [item["item_id"] for item in source_items]
+    executed_ids = list(cpu)
     require(cpu_manifest["t2ance_manifest_sha256"] == digest(manifest)
-            and set(cpu) == {i["item_id"] for i in source_items},
+            and len(set(source_ids)) == len(source_ids)
+            and cpu_manifest["source_candidates"] == len(source_items)
+            and cpu_manifest["sample_ids"] == executed_ids
+            and cpu_manifest["held_without_cpu"] == [item_id for item_id in source_ids
+                                                      if item_id not in cpu]
+            and set(executed_ids) <= set(source_ids),
             "execution is not bound to the t2ance source")
     passed, exclusions = [], []
     for item in source_items:
+        if item["item_id"] not in cpu:
+            exclusions.append({"item_id": item["item_id"],
+                               "reason": "not_independently_cpu_tested"})
+            continue
         original, result = cpu[item["item_id"]]
         require(original["code"] == item["reference_code"]
                 and all(original[k] == item[k] for k in ("tests_sha256", "source_content_sha256")),

@@ -3,6 +3,7 @@
 import unittest
 import json
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 from dag_builder.calibri_normalize import output_source_field, source_units
@@ -16,7 +17,7 @@ from test_calibri_normalize import fixture as graph_fixture
 from test_t2ance_source import fixture as source_fixture
 
 
-def prepared_fixture(root):
+def prepared_fixture(root, *, held=False):
     item, proposal, dependencies = graph_fixture()
     identity, raw = source_fixture()
     item.update({k: identity[k] for k in ("question_id", "question_title", "platform",
@@ -33,8 +34,13 @@ def prepared_fixture(root):
     raw["problem"]["question_title"] = item["question_title"]
     item["origin"] = {"selected_columns_sha256": digest(raw)}
     source, execution, run = root / "source", root / "execution", root / "run"
-    manifest = {"protocol": "t2ance-lcb-source-v1", "items_sha256": digest([item])}
-    write_once(source / "items.json", [item])
+    items = [item]
+    if held:
+        untested = deepcopy(item)
+        untested["item_id"] = "d" * 20
+        items.append(untested)
+    manifest = {"protocol": "t2ance-lcb-source-v1", "items_sha256": digest(items)}
+    write_once(source / "items.json", items)
     write_once(source / "t2ance-manifest.json", manifest)
     write_once(source / "source-rows" / (item["item_id"] + ".json"), raw)
     tests = [{"split": s, "index": 0, "inputs": "fixture", "expected": "fixture"}
@@ -46,6 +52,9 @@ def prepared_fixture(root):
     cpu_manifest = {"protocol": "lcb-reference-seccomp-v1", "planned": 1,
                     "inputs_sha256": digest([record]),
                     "t2ance_manifest_sha256": digest(manifest),
+                    "source_candidates": len(items),
+                    "sample_ids": [item["item_id"]],
+                    "held_without_cpu": [untested["item_id"]] if held else [],
                     "harness_sha256": sha256(execution / "verify_livecodebench_reference.py")}
     write_once(execution / "input-manifest.json", cpu_manifest)
     write_once(execution / "harness-selftest.json", [{"status": s} for s in
@@ -127,6 +136,16 @@ class T2ancePipelineTests(unittest.TestCase):
             (run / "evidence/completion.json").write_text(json.dumps(value))
             with self.assertRaises(ValueError):
                 T2ancePipeline(run, config, Client(outputs)).run()
+
+    def test_unexecuted_source_candidate_is_excluded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run, _ = prepared_fixture(Path(folder).resolve(), held=True)
+            selection = read_json(run / "selection.json")
+            self.assertEqual(selection["source_candidates"], 2)
+            self.assertEqual(selection["cpu_passed"], 1)
+            self.assertEqual(selection["selected_ids"], ["a" * 20])
+            self.assertIn({"item_id": "d" * 20,
+                           "reason": "not_independently_cpu_tested"}, selection["excluded"])
 
 
 if __name__ == "__main__":
