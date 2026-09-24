@@ -24,3 +24,14 @@ be recorded separately before any GPU run. The prepared inventory reports E1
 fair-pair and E2 eligibility; cases with no applicable intervention are not
 positive or negative evidence. Run artifacts remain scientific evidence only
 with the `hf` backend; the mock backend is an interface test.
+
+For the 2026-09-24 coworker delivery, `scripts/freeze_coworker_cohort.py`
+consumes the immutable mechanical audit and a pre-score JSON decision file
+with `protocol="score_blind_semantic_exclusions_v1"` and
+`excluded_source_ids={source_id: reason}`. It verifies audit hashes, keeps
+all 1,539 delivered IDs in the flow ledger, and writes separate E1/E2 inputs
+for GSM8K, MMLU math, and MMLU psychology/social studies. It never edits a
+node or edge. Those frozen files are model-reviewed *synthetic reference*
+DAGs, not human or official gold. The original benchmark-to-delivery selection
+flow is absent from this package and must be reported as unavailable unless
+obtained independently.
