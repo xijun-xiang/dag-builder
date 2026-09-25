@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from dag_builder.livecodebench_repair_continuation_export import (
     PROTOCOL, _html, _merge_repair_rows, _read_jsonl, _split_repair_cohort,
-    export,
+    export, main,
 )
 from dag_builder.schemas import InvalidOutput
 from dag_builder.storage import digest, private_dir, read_json, write_bytes_once, write_once
@@ -210,6 +210,13 @@ class SplitRepairExportTests(unittest.TestCase):
                 with self.subTest(output=output), self.assertRaises(InvalidOutput):
                     export(base, new, output)
                 self.assertFalse((output / "interim-baseline").exists())
+
+            with patch("sys.argv", ["export", "--base", str(base),
+                                    "--continuation-run", str(new),
+                                    "--output", str(new / "bad-release")]):
+                with self.assertRaises(InvalidOutput):
+                    main()
+            self.assertFalse((new / "bad-release").exists())
 
 
 if __name__ == "__main__":
