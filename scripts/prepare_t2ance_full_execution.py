@@ -16,11 +16,11 @@ from dag_builder.livecodebench_tests import decode_tests
 from dag_builder.pipeline import implementation
 from dag_builder.schemas import require
 from dag_builder.storage import digest, private_dir, read_json, write_bytes_once, write_once
-from dag_builder.t2ance_source import canary_seven, inspect_candidate
+from dag_builder.t2ance_source import canary_seven, inspect_candidate, remaining_cpu_batch
 from verify_livecodebench_reference import POLICY, file_hash, static_check
 
 
-def prepare(source, source_file, output, *, canary=False):
+def prepare(source, source_file, output, *, canary=False, remaining_batch=None):
     source = Path(source)
     items, manifest = read_json(source / "items.json"), read_json(source / "t2ance-manifest.json")
     require(manifest["protocol"] == "t2ance-lcb-source-v1"
@@ -36,7 +36,9 @@ def prepare(source, source_file, output, *, canary=False):
     require(len(originals) == 175 and digest(originals) == manifest["full_cohort_sha256"],
             "original cohort changed")
     by_id = {i["item_id"]: i for i in originals}
-    selected = canary_seven(items) if canary else items
+    require(not (canary and remaining_batch is not None), "conflicting CPU selection")
+    selected = (remaining_cpu_batch(items, remaining_batch) if remaining_batch is not None
+                else canary_seven(items) if canary else items)
     rows = []
     for item in selected:
         original = by_id[item["item_id"]]
@@ -67,13 +69,17 @@ def prepare(source, source_file, output, *, canary=False):
     write_bytes_once(root / harness.name, harness.read_bytes())
     write_once(root / "input-manifest.json", {
         "protocol": POLICY, "preparation_protocol": (
+            "t2ance-remaining53-batch-v1" if remaining_batch is not None else
             "t2ance-canary7-execution-v1" if canary else "t2ance-full-execution-v1"),
+        "remaining_batch": remaining_batch,
         "reference_origin": "t2ance_model_output", "source_sha256": SOURCE_SHA256,
         "t2ance_manifest_sha256": digest(manifest), "selected": len(originals),
         "source_candidates": len(items), "planned": len(rows),
         "sample_ids": [item["item_id"] for item in selected],
         "held_without_cpu": [item["item_id"] for item in items if item not in selected],
-        "sample_policy": ("frozen SHA-256 seed within fixed I/O x difficulty quotas"
+        "sample_policy": ("frozen SHA-256 seed, four disjoint batches excluding canary7"
+                          if remaining_batch is not None else
+                          "frozen SHA-256 seed within fixed I/O x difficulty quotas"
                           if canary else "all source candidates"),
         "inputs_sha256": digest(rows),
         "harness_sha256": file_hash(harness), "prepare_script_sha256": file_hash(__file__),
@@ -91,6 +97,8 @@ if __name__ == "__main__":
     for name in ("source", "source-file", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--canary-seven", action="store_true")
+    parser.add_argument("--remaining-batch", type=int, choices=range(4))
     args = parser.parse_args()
     print(json.dumps(prepare(args.source, args.source_file, args.output,
-                             canary=args.canary_seven)), flush=True)
+                             canary=args.canary_seven,
+                             remaining_batch=args.remaining_batch)), flush=True)

@@ -47,6 +47,13 @@ class T2anceSourceTests(unittest.TestCase):
         self.assertEqual(chosen, source.canary_seven(items))
         with self.assertRaises(ValueError):
             source.canary_seven(items[:-1])
+        batches = [source.remaining_cpu_batch(items, index) for index in range(4)]
+        self.assertEqual([len(batch) for batch in batches], [14, 13, 13, 13])
+        self.assertEqual(len({item["item_id"] for batch in batches for item in batch}), 53)
+        self.assertFalse({item["item_id"] for batch in batches for item in batch}
+                         & {item["item_id"] for item in chosen})
+        with self.assertRaises(ValueError):
+            source.remaining_cpu_batch(items, 4)
 
     def test_valid_passed_candidate_and_no_code_execution(self):
         item, row = fixture()

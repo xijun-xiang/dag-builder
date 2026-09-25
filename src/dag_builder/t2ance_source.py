@@ -64,6 +64,18 @@ def canary_seven(items):
     return [item for item in items if item["item_id"] in chosen]
 
 
+def remaining_cpu_batch(items, index, *, count=4):
+    """Partition the 53 non-canary candidates without outcome-based selection."""
+    require(type(index) is int and type(count) is int and count == 4
+            and 0 <= index < count, "invalid remaining CPU batch")
+    canary_ids = {item["item_id"] for item in canary_seven(items)}
+    remaining = sorted((item for item in items if item["item_id"] not in canary_ids),
+                       key=lambda item: digest({"seed": SEED, "purpose": "remaining-cpu",
+                                                "item_id": item["item_id"]}))
+    require(len(remaining) == 53, "remaining CPU cohort changed")
+    return remaining[index::count]
+
+
 def verify_file(path, name):
     require(name in FILES, "unknown t2ance source file")
     path = Path(path)

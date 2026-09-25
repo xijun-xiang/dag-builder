@@ -11,7 +11,7 @@ from dag_builder.livecodebench_source import REVISION, SOURCE_SHA256, normalize_
 from dag_builder.livecodebench_tests import decode_tests
 from dag_builder.schemas import parse_object, require
 from dag_builder.storage import digest, read_json, write_once
-from dag_builder.t2ance_source import canary_seven
+from dag_builder.t2ance_source import canary_seven, remaining_cpu_batch
 
 
 def expected_rows(items, originals, bundles):
@@ -48,9 +48,15 @@ def audit(execution, source, raw_source, frozen_package):
             "deployed package changed")
     returned = read_json(execution / "input-manifest.json")
     protocol = returned["preparation_protocol"]
-    require(protocol in ("t2ance-full-execution-v1", "t2ance-canary7-execution-v1"),
+    require(protocol in ("t2ance-full-execution-v1", "t2ance-canary7-execution-v1",
+                         "t2ance-remaining53-batch-v1"),
             "unknown CPU preparation protocol")
-    selected = canary_seven(items) if protocol == "t2ance-canary7-execution-v1" else items
+    selected = (remaining_cpu_batch(items, returned["remaining_batch"])
+                if protocol == "t2ance-remaining53-batch-v1" else
+                canary_seven(items) if protocol == "t2ance-canary7-execution-v1" else items)
+    require(returned.get("remaining_batch") == (
+        returned["remaining_batch"] if protocol == "t2ance-remaining53-batch-v1" else None),
+        "unexpected CPU batch metadata")
     for item in selected:
         filename = item["item_id"] + ".json"
         deployed = read_json(frozen_package / "source/source-rows" / filename)

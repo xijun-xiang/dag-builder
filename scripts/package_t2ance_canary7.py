@@ -25,7 +25,8 @@ def archive_package(package_root, archive_path):
     """Archive only manifest-listed files, never macOS metadata or stray files."""
     package_root = Path(package_root).resolve(strict=True)
     manifest = read_json(package_root / "package-manifest.json")
-    require(manifest["protocol"] == "t2ance-canary7-package-v1", "unknown package")
+    require(manifest["protocol"] in ("t2ance-canary7-package-v1",
+                                    "t2ance-remaining53-package-v1"), "unknown package")
     names = sorted((*manifest["files"], "package-manifest.json"))
     require(len(names) == len(set(names)) and all(
         name and not name.startswith("/") and all(part not in ("", ".", "..")
