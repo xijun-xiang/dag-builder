@@ -8,24 +8,29 @@ import json
 from pathlib import Path
 
 from .calibri_pipeline import CALIBRIPipeline
+from .calibri_normalize import public_input
+from .client import CallFailure
 from .config import Config
 from .livecodebench_dag import sha256, verify_execution
 from .livecodebench_source import select_canary
 from .pipeline import Pipeline
-from .schemas import require
+from .schemas import InvalidOutput, require
+from .stages import payload
 from .storage import digest, private_dir, read_json, write_bytes_once, write_once
 from .t2ance_source import inspect_candidate
+from .t2ance_v3 import PROTOCOL as PROTOCOL_V3, assemble_graph_v3, normalize_v3, validate_audit_v3
 
 PROTOCOL = "t2ance-lcb-normalize-v1"
 PROTOCOL_V2 = "t2ance-lcb-normalize-v2"
-PROTOCOLS = (PROTOCOL, PROTOCOL_V2)
+PROTOCOLS = (PROTOCOL, PROTOCOL_V2, PROTOCOL_V3)
 CALL_LIMIT = 240
 TOKEN_LIMIT = 16000000
 
 
 def prepare(source, execution, expected_manifest, root, *, limit=None,
             development_run=None, max_calls=24, max_reserved_tokens=2000000,
-            prior_calls=0, prior_reserved_tokens=0, prompt_version=PROTOCOL):
+            prior_calls=0, prior_reserved_tokens=0, prompt_version=PROTOCOL,
+            semantic_quarantine=None):
     """Freeze reviewed input only after the same independent CPU gate passes."""
     source, execution, root = Path(source), Path(execution), private_dir(root)
     require(prompt_version in PROTOCOLS, "unknown t2ance normalization protocol")
@@ -39,7 +44,35 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
     source_items = read_json(source / "items.json")
     require(manifest["protocol"] == "t2ance-lcb-source-v1"
             and digest(source_items) == manifest["items_sha256"], "source selection changed")
+    quarantine = None
+    quarantine_ids = set()
+    if semantic_quarantine is not None:
+        require(prompt_version == PROTOCOL_V3, "semantic quarantine requires v3")
+        quarantine = read_json(semantic_quarantine)
+        require(isinstance(quarantine, dict) and set(quarantine) == {"protocol", "records"}
+                and quarantine["protocol"] == "t2ance-semantic-quarantine-v1"
+                and isinstance(quarantine["records"], list)
+                and bool(quarantine["records"]), "invalid semantic quarantine manifest")
+        source_by_id = {i["item_id"]: i for i in source_items}
+        for record in quarantine["records"]:
+            require(isinstance(record, dict) and set(record) == {
+                "item_id", "reference_code_sha256", "counterexample", "reason"},
+                "invalid semantic quarantine record")
+            item_id = record["item_id"]
+            case = record["counterexample"]
+            require(isinstance(item_id, str) and item_id in source_by_id
+                    and item_id not in quarantine_ids
+                    and record["reference_code_sha256"] == digest(source_by_id[item_id]["reference_code"])
+                    and isinstance(case, dict) and set(case) == {"input", "expected", "observed"}
+                    and all(isinstance(case[k], str) and case[k].strip()
+                            for k in ("input", "expected", "observed"))
+                    and isinstance(record["reason"], str) and record["reason"].strip(),
+                    "semantic quarantine is not bound to the frozen code and counterexample")
+            quarantine_ids.add(item_id)
     cpu, completion = verify_execution(execution, expected_manifest)
+    require(all(item_id in cpu and cpu[item_id][1]["status"] == "passed"
+                for item_id in quarantine_ids),
+            "semantic quarantine must refer to independently CPU-passing candidates")
     cpu_manifest = read_json(expected_manifest)
     source_ids = [item["item_id"] for item in source_items]
     executed_ids = list(cpu)
@@ -51,7 +84,7 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
                                                       if item_id not in cpu]
             and set(executed_ids) <= set(source_ids),
             "execution is not bound to the t2ance source")
-    passed, exclusions = [], []
+    passed, exclusions, cpu_passed_count = [], [], 0
     for item in source_items:
         if item["item_id"] not in cpu:
             exclusions.append({"item_id": item["item_id"],
@@ -73,6 +106,11 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
             exclusions.append({"item_id": item["item_id"],
                                "reason": "reference_execution_not_passed"})
             continue
+        cpu_passed_count += 1
+        if item["item_id"] in quarantine_ids:
+            exclusions.append({"item_id": item["item_id"],
+                               "reason": "independent_semantic_counterexample"})
+            continue
         evidence = {"status": "passed", "job_id": completion["job_id"],
                     "completion_sha256": sha256(execution / "completion.json"),
                     "manifest_sha256": sha256(expected_manifest),
@@ -90,6 +128,8 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
                 "development run must be completed before exclusion")
         prior_items = verify_prepared(development_run, config)
         prior_ids = {i["item_id"] for i in prior_items}
+        require(not quarantine_ids.intersection(prior_ids),
+                "development run and semantic quarantine overlap")
         require(prior_ids <= {i["item_id"] for i in passed}
                 and read_json(development_run / "t2ance-normalization-manifest.json")[
                     "source_manifest_sha256"] == digest(manifest),
@@ -106,7 +146,8 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
     selected_ids = {i["item_id"] for i in items}
     exclusions.extend({"item_id": i["item_id"], "reason": "held_for_later_batch"}
                       for i in remaining if i["item_id"] not in selected_ids)
-    selection = {"source_candidates": len(source_items), "cpu_passed": len(passed),
+    selection = {"source_candidates": len(source_items), "cpu_passed": cpu_passed_count,
+                 "eligible_after_semantic_quarantine": len(passed),
                  "selected_ids": [i["item_id"] for i in items], "excluded": exclusions,
                  "selection": "stratified fixed-hash canary" if limit is not None else
                               "all remaining independent-CPU-passing candidates",
@@ -121,6 +162,11 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
              "prior_calls": prior_calls, "prior_reserved_tokens": prior_reserved_tokens,
              "campaign_call_limit": CALL_LIMIT, "campaign_token_limit": TOKEN_LIMIT,
              "formal_eligible": False}
+    if quarantine is not None:
+        proof["semantic_quarantine_sha256"] = digest(quarantine)
+        proof["quarantined_source_items_sha256"] = digest(source_items)
+        write_once(root / "evidence/semantic-quarantine.json", quarantine)
+        write_once(root / "evidence/quarantined-source-items.json", source_items)
     write_once(root / "items.json", items)
     write_once(root / "selection.json", selection)
     write_once(root / "t2ance-normalization-manifest.json", proof)
@@ -132,6 +178,10 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
         name = item["item_id"] + ".json"
         write_bytes_once(root / "evidence/results" / name,
                          (execution / "results" / name).read_bytes())
+    for item_id in sorted(quarantine_ids):
+        name = item_id + ".json"
+        write_bytes_once(root / "evidence/quarantine-results" / name,
+                         (execution / "results" / name).read_bytes())
     return selection
 
 
@@ -141,6 +191,35 @@ def verify_prepared(root, config):
     items, selection = read_json(root / "items.json"), read_json(root / "selection.json")
     require(proof["protocol"] in PROTOCOLS and digest(items) == proof["items_sha256"]
             and digest(selection) == proof["selection_sha256"], "prepared t2ance input changed")
+    if "semantic_quarantine_sha256" in proof:
+        quarantine = read_json(root / "evidence/semantic-quarantine.json")
+        original_source = read_json(root / "evidence/quarantined-source-items.json")
+        source_manifest = read_json(root / "evidence/source-manifest.json")
+        original_by_id = {i["item_id"]: i for i in original_source}
+        excluded = {r["item_id"] for r in selection["excluded"]
+                    if r["reason"] == "independent_semantic_counterexample"}
+        require(proof["protocol"] == PROTOCOL_V3
+                and digest(quarantine) == proof["semantic_quarantine_sha256"]
+                and digest(original_source) == proof["quarantined_source_items_sha256"]
+                == source_manifest["items_sha256"]
+                and excluded == {r["item_id"] for r in quarantine["records"]}
+                and not excluded.intersection(i["item_id"] for i in items),
+                "semantic quarantine evidence changed")
+        completion = read_json(root / "evidence/completion.json")
+        for record in quarantine["records"]:
+            item_id = record["item_id"]
+            path = root / "evidence/quarantine-results" / (item_id + ".json")
+            result = read_json(path)
+            require(item_id in original_by_id
+                    and record["reference_code_sha256"] == digest(
+                        original_by_id[item_id]["reference_code"])
+                    and sha256(path) == completion["results"][path.name]
+                    and result["status"] == "passed"
+                    and result["code_sha256"] == record["reference_code_sha256"],
+                    "quarantined code or CPU result differs from frozen evidence")
+    else:
+        require(not any(r["reason"] == "independent_semantic_counterexample"
+                        for r in selection["excluded"]), "unbound semantic exclusion")
     require(config.task_type == "livecodebench" and config.prompt_version == proof["prompt_version"]
             and config.solution_source == "t2ance_reference_normalization",
             "wrong t2ance protocol")
@@ -187,6 +266,55 @@ class T2ancePipeline(CALIBRIPipeline):
         verify_prepared(self.root, self.config)
         return Pipeline.run(self, limit, progress, through)
 
+    def process(self, item, through="review_dag"):
+        if self.config.prompt_version != PROTOCOL_V3:
+            return super().process(item, through)
+        directory = self.root / "items" / item["item_id"]
+        if (directory / "result.json").exists():
+            return read_json(directory / "result.json")
+        data, stage = public_input(item), "normalize"
+        try:
+            proposal = self.request_stage(stage, item, data, payload(stage, data, self.config),
+                                          lambda value: normalize_v3(value, item))
+            normalized = normalize_v3(proposal, item)
+            write_once(directory / "normalization.json", normalized)
+            stage = "dependencies"
+            dependency_input = {**data, "normalized": normalized}
+            dependencies = self.request_stage(stage, item, dependency_input,
+                payload(stage, dependency_input, self.config),
+                lambda value: assemble_graph_v3(value, normalized, item))
+            graph = assemble_graph_v3(dependencies, normalized, item)
+            stage = "review_dag"
+            audit_input = {**data, "normalized": normalized, "candidate": graph}
+            audit = self.request_stage(stage, item, audit_input,
+                                       payload(stage, audit_input, self.config),
+                                       validate_audit_v3)
+            if audit["decision"] != "accept":
+                return self._finish(item,
+                    "rejected" if audit["decision"] == "reject" else "needs_review",
+                    stage, audit["reason"])
+            dag = {"schema_version": "reference_dag_v1", "construction_protocol": PROTOCOL_V3,
+                   "item_id": item["item_id"], "source": item, "nodes": graph["nodes"],
+                   "normalization": normalized, "graph_transformation": graph["transformation"],
+                   "dag_review": audit, "execution_evidence": item["execution_evidence"],
+                   "calculation_check": {"status": "reference_tests_passed"},
+                   "formal_eligible": False,
+                   "quality_status": "model_reviewed_pending_release_audit",
+                   "limitation": (
+                       "t2ance-derived and answer-backward canonicalized explanation; "
+                       "frozen code passed tests; same-model semantic review, "
+                       "not native CoT or official/human gold")}
+            write_once(directory / "dag.json", dag)
+            return self._finish(item, "model_accepted", stage,
+                                "pending release audit", digest(dag))
+        except InvalidOutput as error:
+            return self._finish(item, "needs_review", stage, str(error))
+        except CallFailure as error:
+            if not (self.resilient and error.category == "transient_retries_exhausted"):
+                self._stop.set()
+            return {"item_id": item["item_id"], "status": "paused",
+                    "stage": stage, "reason": error.category}
+
 
 def main():
     import argparse
@@ -202,6 +330,8 @@ def main():
     parser.add_argument("--prior-calls", type=int, default=0)
     parser.add_argument("--prior-reserved-tokens", type=int, default=0)
     parser.add_argument("--prompt-version", choices=PROTOCOLS, default=PROTOCOL)
+    parser.add_argument("--semantic-quarantine", type=Path,
+                        help="v3-only frozen code-bound semantic counterexample manifest")
     args = parser.parse_args()
     os.umask(0o077)
     with run_lock(args.root):
@@ -209,7 +339,8 @@ def main():
             args.root, limit=args.limit, development_run=args.development_run,
             max_calls=args.max_calls, max_reserved_tokens=args.max_reserved_tokens,
             prior_calls=args.prior_calls, prior_reserved_tokens=args.prior_reserved_tokens,
-            prompt_version=args.prompt_version),
+            prompt_version=args.prompt_version,
+            semantic_quarantine=args.semantic_quarantine),
             ensure_ascii=False))
 
 
