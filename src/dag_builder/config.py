@@ -68,7 +68,7 @@ class Config:
             "gsm8k": ("gsm8k-v1",),
             "gpqa": ("gpqa-reference-v1", "gpqa-repair-v1", "gpqa-revision-v1"),
             "humaneval": ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"),
-            "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1", "livecodebench-editorial-pilot-v1", "calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "calibri-lcb-repair-v1", "calibri-lcb-repair-v2", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4", "lcb-dag-revision-v1", "lcb-dag-revision-v2", "lcb-dag-revision-v3", "lcb-answer-backward-review-v1"),
+            "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1", "livecodebench-editorial-pilot-v1", "calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "calibri-lcb-repair-v1", "calibri-lcb-repair-v2", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4", "lcb-dag-revision-v1", "lcb-dag-revision-v2", "lcb-dag-revision-v3", "lcb-dag-revision-v4", "lcb-answer-backward-review-v1"),
         }[self.task_type]
         if self.prompt_version not in versions:
             raise ValueError("prompt version does not match task_type")
@@ -103,7 +103,7 @@ class Config:
             "reference_dag_revision",
         ):
             raise ValueError("unknown solution source")
-        if self.prompt_version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2", "lcb-dag-revision-v3", "lcb-answer-backward-review-v1"):
+        if self.prompt_version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2", "lcb-dag-revision-v3", "lcb-dag-revision-v4", "lcb-answer-backward-review-v1"):
             if self.solution_source != "reference_dag_revision":
                 raise ValueError("DAG revision requires its dedicated source label")
         elif self.solution_source == "reference_dag_revision":

@@ -38,7 +38,7 @@ def pipeline_type(root, config):
         if config.prompt_version == "lcb-answer-backward-review-v1":
             from dag_builder.lcb_answer_backward_review import LCBAnswerBackwardReview
             return LCBAnswerBackwardReview
-        if config.prompt_version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2", "lcb-dag-revision-v3"):
+        if config.prompt_version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2", "lcb-dag-revision-v3", "lcb-dag-revision-v4"):
             from dag_builder.livecodebench_dag_revision import LCBDAGRevisionPipeline
             return LCBDAGRevisionPipeline
         if (root / "calibri-review-resume-manifest.json").exists():

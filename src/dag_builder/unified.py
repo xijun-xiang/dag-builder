@@ -110,7 +110,9 @@ def convert_record(record, benchmark, source_file_sha256):
                      and source_status == "t2ance_derived_tested_reference")
                  or (schema_version == "lcb-v6-dag-revision-candidates-v1"
                      and source_status in ("calibri_derived_tested_reference",
-                                           "t2ance_derived_tested_reference")),
+                                           "t2ance_derived_tested_reference"))
+                 or (schema_version == "lcb-v6-dag-revision-answerbackward-candidates-v1"
+                     and source_status == "calibri_derived_tested_reference"),
                  "LCB source protocol mismatch")
         _require(record.get("status", "model_accepted") == "model_accepted"
                  and record.get("human_approved") is False
@@ -139,6 +141,13 @@ def convert_record(record, benchmark, source_file_sha256):
                      and source_dag.get("construction_protocol") == "lcb-dag-revision-v3"
                      and source.get("reference_origin") == "calibri_model_output",
                      "CALIBRI revision protocol/source mismatch")
+        elif schema_version == "lcb-v6-dag-revision-answerbackward-candidates-v1":
+            _require(isinstance(source_dag, dict)
+                     and source_dag.get("construction_protocol") == "lcb-answer-backward-review-v1"
+                     and source_dag.get("normalization", {}).get("protocol") ==
+                     "calibri-lcb-normalize-v1"
+                     and source.get("reference_origin") == "calibri_model_output",
+                     "CALIBRI answer-backward protocol/source mismatch")
         _require(isinstance(source_dag, dict) and source_dag.get("source") == source
                  and source_dag.get("item_id") == item_id
                  and source_dag.get("formal_eligible") is False

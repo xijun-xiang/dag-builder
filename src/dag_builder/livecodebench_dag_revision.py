@@ -25,7 +25,8 @@ from .t2ance_v4 import assemble_graph_v4, normalize_v4, validate_audit_v4
 PROTOCOL = "lcb-dag-revision-v1"
 PROTOCOL_V2 = "lcb-dag-revision-v2"
 PROTOCOL_V3 = "lcb-dag-revision-v3"
-PROTOCOLS = (PROTOCOL, PROTOCOL_V2, PROTOCOL_V3)
+PROTOCOL_V4 = "lcb-dag-revision-v4"
+PROTOCOLS = (PROTOCOL, PROTOCOL_V2, PROTOCOL_V3, PROTOCOL_V4)
 CALIBRI_RUNS = ("calibri-normalize4-v2", "calibri-full-continuation87-v1")
 T2ANCE_RUNS = (
     "t2ance-v4-heldout6-20260925",
@@ -176,6 +177,9 @@ def verify_prepared(root, config):
                 and item["execution_evidence"]["result_sha256"] == origin["cpu_result_sha256"]
                 and feedback["source_tier"] in ("CALIBRI", "t2ance"),
                 "revision source or feedback changed")
+    if config.prompt_version == PROTOCOL_V4:
+        from .lcb_revision_followup import verify_followup
+        verify_followup(root, manifest, selection, items)
     return items
 
 
@@ -202,7 +206,7 @@ class LCBDAGRevisionPipeline(Pipeline):
         public = public_input(item)
         try:
             revision_public = dict(public)
-            if self.config.prompt_version == PROTOCOL_V3:
+            if self.config.prompt_version in (PROTOCOL_V3, PROTOCOL_V4):
                 # Source units already contain every code line. Avoid sending
                 # the full program a second time in the same revision request.
                 revision_public.pop("reference_code")

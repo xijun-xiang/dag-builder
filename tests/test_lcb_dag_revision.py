@@ -53,6 +53,20 @@ class LCBDAGRevisionTests(unittest.TestCase):
         self.assertEqual(compact_graph["nodes"][0]["statement"], "important claim")
         self.assertNotIn("long code", str(compact_graph))
 
+    def test_v4_is_one_failure_directed_round_without_forced_acceptance(self):
+        config = self.config(version="lcb-dag-revision-v4")
+        self.assertEqual(stages_for(config), ("revise", "dependencies", "review_dag"))
+        revision = prompt("revise", config.prompt_version, config.task_type,
+                          config.solution_source)
+        dependency = prompt("dependencies", config.prompt_version, config.task_type,
+                            config.solution_source)
+        review = prompt("review_dag", config.prompt_version, config.task_type,
+                        config.solution_source)
+        self.assertIn("nonempty array", revision)
+        self.assertIn("actual proof", dependency)
+        self.assertIn("maximum stated input sizes", review)
+        self.assertIn("not accept", review)
+
     def test_protocol_cannot_claim_an_unrelated_solution_source(self):
         with self.assertRaisesRegex(ValueError, "dedicated source label"):
             Config(task_type="livecodebench", prompt_version="lcb-dag-revision-v1",
