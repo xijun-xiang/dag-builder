@@ -92,6 +92,7 @@ class Pipeline:
         retry_safe_failures=False,
         isolate_uncertain_failures=False,
         resilient=False,
+        runtime_workers=None,
     ):
         if type(self) is Pipeline and config.task_type == "livecodebench":
             raise ValueError("LiveCodeBench requires its reference/execution-gated pipeline")
@@ -111,6 +112,11 @@ class Pipeline:
                 "resilient mode cannot be combined with legacy retry flags"
             )
         self.resilient = resilient
+        if runtime_workers is not None and (
+            type(runtime_workers) is not int or not 1 <= runtime_workers <= 32
+        ):
+            raise ValueError("invalid runtime worker count")
+        self.runtime_workers = runtime_workers or config.workers
         self._new_uncertain_failures = 0
         self._budget_lock = threading.Lock()
         self._stop = threading.Event()
@@ -129,6 +135,7 @@ class Pipeline:
         self.reserved_tokens = 0
         self.accounted_tokens = 0
         self._accounted_responses.clear()
+        self._contract_violations.clear()
         for path in self.root.glob("items/*/*/attempt-*/request.json"):
             request = read_json(path)
             self.calls += 1
@@ -140,6 +147,8 @@ class Pipeline:
                     read_json(path.parent / "response.json")["body"],
                     raise_failure=False,
                 )
+        if self.accounted_tokens > self.config.max_reserved_tokens:
+            self._stop.set()
 
     def _check_response(self, attempt, response, *, raise_failure=True):
         """Persist raw responses first; reject infra failures before stage parsing.
@@ -155,10 +164,12 @@ class Pipeline:
         )
         with self._budget_lock:
             if attempt not in self._accounted_responses:
-                self.accounted_tokens += (
-                    check["accounted_tokens"] - request["reserved_tokens"]
-                )
+                overage = check["accounted_tokens"] - request["reserved_tokens"]
+                self.accounted_tokens += overage
+                self.reserved_tokens += overage
                 self._accounted_responses.add(attempt)
+            if self.accounted_tokens > self.config.max_reserved_tokens:
+                self._stop.set()
             if check["violations"]:
                 self._contract_violations.add(str(attempt.relative_to(self.root)))
                 self._stop.set()
@@ -282,6 +293,8 @@ class Pipeline:
                     )
                 if (attempt / "error.json").exists():
                     saved = read_json(attempt / "error.json")
+                    if self.retry_safe_failures and saved["category"] == "authentication":
+                        continue
                     if saved["category"] not in transient:
                         raise CallFailure(saved["category"], saved.get("http_status"))
                 # A request without response/error is also unknown, not free.
@@ -320,7 +333,9 @@ class Pipeline:
         raise CallFailure("transient_retries_exhausted")
 
     def stage(self, stage, item, results):
-        data = stage_input(stage, item, results, self.config.solution_source)
+        data = stage_input(
+            stage, item, results, self.config.solution_source, self.config.prompt_version
+        )
         request_payload = payload(stage, data, self.config)
         return self.request_stage(
             stage,
@@ -599,6 +614,8 @@ class Pipeline:
             self._restore_budget()
             policy = {
                 "resilient": self.resilient,
+                "configured_workers": self.config.workers,
+                "runtime_workers": self.runtime_workers,
                 "isolate_uncertain_failures": self.isolate_uncertain_failures,
                 "retry_safe_failures": self.retry_safe_failures,
                 "max_lifetime_stage_attempts": 4 if self.resilient else None,
@@ -627,7 +644,7 @@ class Pipeline:
             if limit is not None and (type(limit) is not int or limit <= 0):
                 raise ValueError("limit must be positive")
             started, results = now(), []
-            with ThreadPoolExecutor(max_workers=self.config.workers) as pool:
+            with ThreadPoolExecutor(max_workers=self.runtime_workers) as pool:
                 futures = [
                     pool.submit(self.process, item, through) for item in selected
                 ]
@@ -653,6 +670,7 @@ class Pipeline:
                 "isolate_uncertain_failures": self.isolate_uncertain_failures,
                 "new_uncertain_failures": self._new_uncertain_failures,
                 "resilient": self.resilient,
+                "runtime_workers": self.runtime_workers,
                 "execution_policy": policy,
             }
             write_once(

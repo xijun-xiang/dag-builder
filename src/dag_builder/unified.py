@@ -7,10 +7,11 @@ complete original row for the remaining historical metadata.
 
 import hashlib
 import json
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 
-from .storage import digest, private_dir, write_bytes_once, write_once
+from .storage import digest, private_dir, read_json, write_bytes_once, write_once
 from .unified_viewer import render
 from .mmlu_catalog import MMLU_SUBJECTS
 
@@ -300,4 +301,121 @@ def convert_file(source_path, benchmark, expected_sha256, output_dir=None):
         write_bytes_once(root / "pals_dag_unified_v1.jsonl", encoded)
         write_bytes_once(root / "pals_dag_unified_v1.html", html)
         write_once(root / "manifest.json", manifest)
+    return manifest
+
+
+LOCAL_SOURCE_VERSION = "dag_builder_model_accepted_v1"
+
+
+def accepted_records(roots):
+    """Freeze accepted local GSM8K/MMLU runs without changing their evidence."""
+    records = []
+    seen = set()
+    for root in map(Path, roots):
+        for item in read_json(root / "items.json"):
+            item_id = item["item_id"]
+            directory = root / "items" / item_id
+            result_path = directory / "result.json"
+            if not result_path.exists():
+                continue
+            result = read_json(result_path)
+            if result.get("status") != "model_accepted":
+                continue
+            dag_path = directory / "dag.json"
+            _require(dag_path.exists(), f"accepted item missing DAG: {item_id}")
+            dag = read_json(dag_path)
+            _require(result.get("dag_sha256") == digest(dag), f"accepted DAG hash mismatch: {item_id}")
+            _require(dag.get("item_id") == item_id and dag.get("source") == item,
+                     f"accepted DAG/source mismatch: {item_id}")
+            _require(item_id not in seen, f"duplicate accepted item: {item_id}")
+            seen.add(item_id)
+            records.append({"schema_version": LOCAL_SOURCE_VERSION, "item_id": item_id,
+                            "status": result["status"], "result": result, "dag": dag})
+    records.sort(key=lambda record: record["item_id"])
+    _require(bool(records), "no model-accepted records found")
+    return records
+
+
+def _convert_local_record(record, benchmark, source_file_sha256):
+    """Adapt the pre-existing local run format to the shared PALS schema."""
+    _require(benchmark in ("gsm8k", "mmlu"), "unsupported local benchmark")
+    _require(_sha256(source_file_sha256), "source file SHA256 required")
+    _require(record.get("schema_version") == LOCAL_SOURCE_VERSION
+             and record.get("status") == "model_accepted", "unaccepted local record")
+    dag = record["dag"]
+    source = dag["source"]
+    item_id = record["item_id"]
+    _require(source.get("item_id") == item_id
+             and digest(dag) == record["result"].get("dag_sha256"), "local DAG/source mismatch")
+    _require(source.get("task_type", "mmlu") == benchmark, "benchmark/source task mismatch")
+    if benchmark == "mmlu":
+        choices = source.get("choices")
+        _require(isinstance(choices, list) and len(choices) == 4
+                 and all(_text(choice) for choice in choices)
+                 and source.get("gold_answer") in ("A", "B", "C", "D"),
+                 "invalid MMLU choices or answer")
+        subset = source["subset"]
+        problem = {"question": source["question"], "domain": subset,
+                   "choices": choices, "entry_point": None}
+        answer = {"kind": "choice", "value": source["gold_answer"]}
+    else:
+        subset = source["config"]
+        _require(_text(source.get("gold_answer")), "invalid GSM8K answer")
+        problem = {"question": source["question"], "domain": "grade_school_math",
+                   "choices": None, "entry_point": None}
+        answer = {"kind": "text", "value": source["gold_answer"]}
+    nodes = deepcopy(dag.get("nodes"))
+    _require(isinstance(nodes, list) and len(nodes) >= 2, "incomplete DAG")
+    canonical_nodes = [{key: node[key] for key in NODE_FIELDS} for node in nodes]
+    source_id = f"{source['dataset']}:{subset}:{source['split']}:{source['row']}"
+    row = {
+        "schema_version": VERSION, "item_id": item_id, "benchmark": benchmark,
+        "problem": problem, "answer": answer,
+        "dag": {"schema_version": GRAPH_VERSION, "nodes": canonical_nodes,
+                "nodes_sha256": digest(canonical_nodes)},
+        "review": {"source_status": record["status"], "model_accepted": True,
+                   "human_approved": False, "quality_status": dag.get("quality_status"),
+                   "construction_protocol": dag.get("construction_protocol")},
+        "provenance": {
+            "dataset": source["dataset"], "subset": subset, "split": source["split"],
+            "revision": source["revision"], "source_row": source["row"],
+            "source_id": source_id, "source_content_sha256": source["source_content_sha256"],
+            "source_schema_version": LOCAL_SOURCE_VERSION, "source_file_sha256": source_file_sha256,
+            "source_record_sha256": digest(record), "source_dag_sha256": digest(dag),
+        },
+    }
+    validate_row(row)
+    return row
+
+
+def export_roots(roots, benchmark, output_dir):
+    """Export immutable local-run evidence; retained for the merged v2 pipeline."""
+    records = accepted_records(roots)
+    source_bytes = ("".join(json.dumps(record, ensure_ascii=False, sort_keys=True,
+                                      separators=(",", ":"), allow_nan=False) + "\n"
+                            for record in records)).encode("utf-8")
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    rows = [_convert_local_record(record, benchmark, source_hash) for record in records]
+    _require(len({row["item_id"] for row in rows}) == len(rows), "duplicate item ID")
+    encoded = ("".join(json.dumps(row, ensure_ascii=False, sort_keys=True,
+                                separators=(",", ":"), allow_nan=False) + "\n"
+                       for row in rows)).encode("utf-8")
+    html = render(rows, benchmark)
+    subsets = Counter(row["provenance"]["subset"] for row in rows)
+    manifest = {
+        "schema_version": VERSION, "benchmark": benchmark, "records": len(rows),
+        "records_by_subset": dict(sorted(subsets.items())),
+        "source_schema_version": LOCAL_SOURCE_VERSION,
+        "source_sha256": source_hash, "unified_sha256": hashlib.sha256(encoded).hexdigest(),
+        "html_schema_version": "pals_dag_unified_view_v1",
+        "html_sha256": hashlib.sha256(html).hexdigest(), "human_approved_records": 0,
+        "scope": "model-accepted synthetic reference DAGs; not human-approved gold",
+    }
+    destination = Path(output_dir)
+    _require(not destination.exists(), "output directory already exists")
+    private_dir(destination)
+    write_bytes_once(destination / "accepted_source.jsonl", source_bytes)
+    write_bytes_once(destination / "pals_dag_unified_v1.jsonl", encoded)
+    write_bytes_once(destination / "pals_dag_unified_v1.html", html)
+    write_once(destination / "manifest.json", manifest)
     return manifest

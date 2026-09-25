@@ -64,8 +64,8 @@ class Config:
         if self.task_type not in ("mmlu", "gsm8k", "gpqa", "humaneval", "livecodebench"):
             raise ValueError("unknown task_type")
         versions = {
-            "mmlu": ("v1", "mmlu-thinking-v1", "mmlu-general-thinking-v1"),
-            "gsm8k": ("gsm8k-v1",),
+            "mmlu": ("v1", "mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1"),
+            "gsm8k": ("gsm8k-v1", "gsm8k-v2"),
             "gpqa": ("gpqa-reference-v1", "gpqa-repair-v1", "gpqa-revision-v1"),
             "humaneval": ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"),
             "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1", "livecodebench-editorial-pilot-v1", "calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "calibri-lcb-repair-v1", "calibri-lcb-repair-v2", "t2ance-lcb-normalize-v1"),
@@ -88,7 +88,7 @@ class Config:
             raise ValueError("reasoning effort none requires thinking disabled")
         if self.reasoning_effort in ("low", "high", "max") and self.thinking != "enabled":
             raise ValueError("reasoning effort requires explicit thinking mode")
-        if self.prompt_version in ("mmlu-thinking-v1", "mmlu-general-thinking-v1") and self.thinking != "enabled":
+        if self.prompt_version in ("mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1") and self.thinking != "enabled":
             raise ValueError("native reasoning protocol requires thinking enabled")
         if self.solution_source not in (
             "independent_generation",

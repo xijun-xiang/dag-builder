@@ -330,6 +330,49 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 0)
         self.assertTrue(result["paused"])
 
+    def test_restore_budget_uses_actual_usage_above_reservation(self):
+        attempt = self.root / "items" / self.item["item_id"] / "solve/attempt-00"
+        write_once(
+            attempt / "request.json",
+            {"payload": {}, "reserved_tokens": 100},
+        )
+        write_once(
+            attempt / "response.json",
+            {"body": {"usage": {"total_tokens": 150}}},
+        )
+        runner = Pipeline(
+            self.root,
+            Config(workers=1, max_reserved_tokens=1_000),
+            FakeClient(),
+        )
+        runner._restore_budget()
+        self.assertEqual((runner.calls, runner.reserved_tokens), (1, 150))
+        self.assertEqual(runner.accounted_tokens, 150)
+        # The merged response contract also stops a per-request reservation
+        # overage, even when the campaign-wide budget still has room.
+        self.assertTrue(runner._stop.is_set())
+        self.assertTrue(runner._contract_violations)
+
+    def test_cached_overage_cannot_bypass_global_budget_on_resume(self):
+        class OverReportingClient(FakeClient):
+            def complete(self, request):
+                response = super().complete(request)
+                response["usage"]["total_tokens"] = 100_000
+                return response
+
+        config = Config(workers=1, max_reserved_tokens=50_000)
+        first_client = OverReportingClient()
+        first = self.run_pipeline(first_client, config)
+        self.assertTrue(first["global_stop"])
+        self.assertEqual(first["reserved_tokens"], 100_000)
+        self.assertEqual(len(first_client.calls), 1)
+
+        resumed_client = OverReportingClient()
+        resumed = self.run_pipeline(resumed_client, config)
+        self.assertTrue(resumed["global_stop"])
+        self.assertEqual(resumed["reserved_tokens"], 100_000)
+        self.assertEqual(len(resumed_client.calls), 0)
+
     def test_uncertain_timeout_is_not_retried(self):
         client = FakeClient(failure=CallFailure("uncertain_remote_state"))
         self.run_pipeline(client)
@@ -706,6 +749,37 @@ class BuilderTests(unittest.TestCase):
         result = Pipeline(root, Config(workers=2, max_calls=2), client).run()
         self.assertEqual(len(client.calls), 2)
         self.assertTrue(result["paused"])
+
+    def test_runtime_workers_override_does_not_change_frozen_config(self):
+        runner = Pipeline(
+            self.root,
+            Config(workers=1),
+            FakeClient(),
+            runtime_workers=6,
+        )
+        result = runner.run(through="solve")
+        self.assertEqual(result["runtime_workers"], 6)
+        self.assertEqual(result["execution_policy"]["configured_workers"], 1)
+        self.assertEqual(result["execution_policy"]["runtime_workers"], 6)
+        self.assertEqual(read_json(self.root / "run_config.json")["workers"], 1)
+
+    def test_runtime_workers_obey_task_limit(self):
+        with self.assertRaises(ValueError):
+            Pipeline(
+                self.root,
+                Config(workers=1),
+                FakeClient(),
+                runtime_workers=33,
+            )
+
+    def test_runtime_workers_allow_pressure_test_ceiling(self):
+        runner = Pipeline(
+            self.root,
+            Config(workers=1),
+            FakeClient(),
+            runtime_workers=24,
+        )
+        self.assertEqual(runner.runtime_workers, 24)
 
     def test_stage_barrier_defers_annotation(self):
         client = FakeClient()

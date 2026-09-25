@@ -33,11 +33,16 @@ def native_config(version="mmlu-thinking-v1"):
 
 
 class NativeClient:
-    def __init__(self, reasoning=RATIONALE, answer="A", structured=None,
-                 version="mmlu-thinking-v1"):
+    def __init__(
+        self,
+        reasoning=RATIONALE,
+        answer="A",
+        structured=None,
+        version="mmlu-thinking-v1",
+    ):
         self.reasoning, self.answer = reasoning, answer
-        self.version = version
         self.structured = deepcopy(SOLUTION if structured is None else structured)
+        self.version = version
         self.calls = []
 
     def complete(self, request):
@@ -60,7 +65,11 @@ class NativeClient:
                     "finish_reason": "stop",
                     "message": {
                         "role": "assistant",
-                        "reasoning_content": self.reasoning,
+                        "reasoning_content": (
+                            self.reasoning
+                            if request.get("thinking", {}).get("type") == "enabled"
+                            else None
+                        ),
                         "content": content,
                     },
                 }
@@ -94,9 +103,12 @@ class ThinkingTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_native_config_requires_enabled_thinking(self):
-        for mode in (None, "disabled"):
-            with self.assertRaises(ValueError):
-                Config(prompt_version="mmlu-thinking-v1", thinking=mode)
+        for version in ("mmlu-thinking-v1", "mmlu-thinking-v2"):
+            for mode in (None, "disabled"):
+                with self.subTest(version=version, mode=mode), self.assertRaises(
+                    ValueError
+                ):
+                    Config(prompt_version=version, thinking=mode)
         with self.assertRaises(ValueError):
             Config(reasoning_effort="high")
         with self.assertRaises(ValueError):
@@ -122,6 +134,63 @@ class ThinkingTests(unittest.TestCase):
         self.assertNotIn("response_format", request)
         self.assertEqual(request["thinking"], {"type": "enabled"})
         self.assertEqual(request["reasoning_effort"], "high")
+
+    def test_v2_exposes_choices_only_after_solve(self):
+        config = native_config("mmlu-thinking-v2")
+        solve_data = stage_input(
+            "solve", self.item, {}, prompt_version=config.prompt_version
+        )
+        self.assertNotIn("reference_sources", solve_data)
+        serialized = json.dumps(payload("solve", solve_data, config))
+        self.assertNotIn("gold_answer", serialized)
+
+        atomize_data = stage_input(
+            "atomize",
+            self.item,
+            {"solve": {"answer": "A"}, "structure_solution": SOLUTION},
+            prompt_version=config.prompt_version,
+        )
+        self.assertEqual(
+            atomize_data["reference_sources"],
+            {
+                "choice_A": "3 m/s",
+                "choice_B": "2 m/s",
+                "choice_C": "6 m/s",
+                "choice_D": "12 m/s",
+            },
+        )
+        self.assertNotIn("correct_answer", atomize_data["reference_sources"])
+
+    def test_v2_disables_thinking_and_caps_structured_stages(self):
+        config = native_config("mmlu-thinking-v2")
+        solve = payload("solve", stage_input("solve", self.item, {}), config)
+        self.assertEqual(solve["thinking"], {"type": "enabled"})
+        self.assertEqual(solve["reasoning_effort"], "high")
+        self.assertNotIn("temperature", solve)
+
+        data = stage_input(
+            "atomize",
+            self.item,
+            {"solve": {"answer": "A"}, "structure_solution": SOLUTION},
+            prompt_version=config.prompt_version,
+        )
+        structured = payload("atomize", data, config)
+        self.assertEqual(structured["thinking"], {"type": "disabled"})
+        self.assertNotIn("reasoning_effort", structured)
+        self.assertEqual(structured["max_tokens"], 4096)
+        self.assertEqual(structured["temperature"], 0.0)
+        self.assertEqual(structured["response_format"], {"type": "json_object"})
+
+    def test_v2_full_native_pipeline(self):
+        config = native_config("mmlu-thinking-v2")
+        client = NativeClient(version=config.prompt_version)
+        result = Pipeline(self.root, config, client).run()
+        self.assertEqual(result["results"][0]["status"], "model_accepted")
+        self.assertEqual(len(client.calls), 7)
+        self.assertEqual(client.calls[0]["thinking"], {"type": "enabled"})
+        for request in client.calls[1:]:
+            self.assertEqual(request["thinking"], {"type": "disabled"})
+            self.assertNotIn("reasoning_effort", request)
 
     def test_native_parser_preserves_both_fields(self):
         message = {

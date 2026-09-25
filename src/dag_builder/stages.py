@@ -27,7 +27,17 @@ THINKING_STAGES = ("solve", "structure_solution", *STAGES[1:])
 REFERENCE_STAGES = STAGES[1:]
 REPAIR_STAGES = ("repair", "justify", "review_repair")
 REVISION_STAGES = ("revise", "audit", "adjudicate")
-MMLU_NATIVE_VERSIONS = ("mmlu-thinking-v1", "mmlu-general-thinking-v1")
+MMLU_NATIVE_VERSIONS = (
+    "mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1",
+)
+V2_STAGE_TOKEN_CAPS = {
+    "structure_solution": 2048,
+    "review_solution": 2048,
+    "atomize": 4096,
+    "dependencies": 2048,
+    "justify": 4096,
+    "review_dag": 4096,
+}
 
 
 def stages_for(config):
@@ -88,8 +98,8 @@ def prompt(
         raise ValueError("unknown stage or prompt version")
     if task_type == "mmlu" and version not in ("v1", *MMLU_NATIVE_VERSIONS):
         raise ValueError("unsupported mmlu prompt version")
-    if task_type == "gsm8k" and version != "gsm8k-v1":
-        raise ValueError("gsm8k requires prompt version gsm8k-v1")
+    if task_type == "gsm8k" and version not in ("gsm8k-v1", "gsm8k-v2"):
+        raise ValueError("gsm8k requires a supported gsm8k prompt version")
     if task_type == "gpqa" and version not in (
         "gpqa-reference-v1",
         "gpqa-repair-v1",
@@ -115,8 +125,15 @@ def prompt(
         location = files("dag_builder").joinpath(
             "prompts", "gpqa-reference-v1", "justify.md"
         )
-    if version == "mmlu-thinking-v1" and not location.is_file():
-        location = files("dag_builder").joinpath("prompts", "v1", stage + ".md")
+    fallback_versions = {
+        "mmlu-thinking-v1": ("v1",),
+        "mmlu-thinking-v2": ("mmlu-thinking-v1", "v1"),
+        "gsm8k-v2": ("gsm8k-v1",),
+    }.get(version, ())
+    for fallback in fallback_versions:
+        if location.is_file():
+            break
+        location = files("dag_builder").joinpath("prompts", fallback, filename)
     return location.read_text(encoding="utf-8")
 
 
@@ -141,7 +158,9 @@ def reference_solution(item, results):
     return results["solve"]
 
 
-def stage_input(stage, item, results, solution_source="independent_generation"):
+def stage_input(
+    stage, item, results, solution_source="independent_generation", prompt_version=None
+):
     data = {"question": public_question(item)}
     if item.get("task_type") in ("humaneval", "livecodebench"):
         require(stage in STAGES, "unknown HumanEval stage")
@@ -169,6 +188,16 @@ def stage_input(stage, item, results, solution_source="independent_generation"):
                 for label, value in zip("ABCD", item["choices"])
             },
         }
+    elif (
+        item.get("task_type") == "mmlu"
+        and prompt_version == "mmlu-thinking-v2"
+        and stage in ("atomize", "review_dag")
+    ):
+        # The public choices ground the final label-to-text mapping, not the answer.
+        data["reference_sources"] = {
+            f"choice_{label}": value
+            for label, value in zip("ABCD", item["choices"])
+        }
     if stage == "structure_solution":
         data["native_solution"] = results["solve"]
         return data
@@ -195,21 +224,31 @@ def stage_input(stage, item, results, solution_source="independent_generation"):
     return data
 
 
-def request_controls(config, *, native_solve=False):
+def request_controls(config, *, native_solve=False, stage=None):
     """Shared production/probe serialization; never guess provider overrides."""
     request = {
         "model": config.model,
         "temperature": config.temperature,
-        "max_tokens": config.max_tokens,
+        "max_tokens": (
+            min(config.max_tokens, V2_STAGE_TOKEN_CAPS[stage])
+            if config.prompt_version == "mmlu-thinking-v2"
+            and stage in V2_STAGE_TOKEN_CAPS
+            else config.max_tokens
+        ),
     }
-    if config.thinking is not None:
-        request["thinking"] = {"type": config.thinking}
-    if config.thinking == "enabled":
+    thinking = config.thinking
+    reasoning_effort = config.reasoning_effort
+    if config.prompt_version == "mmlu-thinking-v2" and stage not in (None, "solve"):
+        thinking = "disabled"
+        reasoning_effort = None
+    if thinking is not None:
+        request["thinking"] = {"type": thinking}
+    if thinking == "enabled":
         request.pop(
             "temperature"
         )  # Official thinking mode ignores sampling temperature.
-    if config.reasoning_effort is not None:
-        request["reasoning_effort"] = config.reasoning_effort
+    if reasoning_effort is not None:
+        request["reasoning_effort"] = reasoning_effort
     if config.response_format is not None and not native_solve:
         request["response_format"] = {"type": config.response_format}
     return request
@@ -221,7 +260,7 @@ def payload(stage, data, config):
         # Explicit labels in every model request; preserve the original item bytes.
         data = dict(data, question=dict(data["question"]))
         data["question"]["choices"] = dict(zip("ABCD", data["question"]["choices"]))
-    request = request_controls(config, native_solve=native and stage == "solve")
+    request = request_controls(config, native_solve=native and stage == "solve", stage=stage)
     request["messages"] = [
         {
             "role": "system",
@@ -272,7 +311,10 @@ def validate(stage, value, data, solution_source="independent_generation", *, pr
             require(all("```" not in n["statement"] for n in value["nodes"][:-1]),
                     "algorithm steps must not be fenced code")
     elif stage == "dependencies":
-        validate_parents(value, data["nodes"])
+        validate_parents(
+            value, data["nodes"],
+            reject_transitive=prompt_version in ("mmlu-thinking-v2", "gsm8k-v2"),
+        )
     elif stage == "justify":
         validate_justifications(value, data["nodes"])
     else:
