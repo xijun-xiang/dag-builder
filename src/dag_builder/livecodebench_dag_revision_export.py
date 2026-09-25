@@ -63,7 +63,8 @@ def _audited_rows(run):
     return rows, audit
 
 
-def _merge(baseline_rows, baseline_accepted, canary, rest, *, canary_name, rest_name):
+def _merge(baseline_rows, baseline_accepted, canary, rest, *, canary_name, rest_name,
+           semantic_holds):
     require(len(baseline_rows) == 175 and len(baseline_accepted) == 70,
             "175-question baseline or 70 accepted candidates changed")
     held = {row["item_id"] for row in baseline_rows if row["status"] == "needs_review"}
@@ -75,6 +76,11 @@ def _merge(baseline_rows, baseline_accepted, canary, rest, *, canary_name, rest_
             "baseline accepted and held rows overlap")
     revisions = {**{key: (canary_name, *value) for key, value in canary.items()},
                  **{key: (rest_name, *value) for key, value in rest.items()}}
+    require(set(semantic_holds) <= set(revisions)
+            and all(revisions[item_id][2]["status"] == "model_accepted"
+                    and isinstance(reason, str) and bool(reason.strip())
+                    for item_id, reason in semantic_holds.items()),
+            "semantic holds must name a model-accepted revision with a reason")
     updated, accepted = [], list(baseline_accepted)
     for row in baseline_rows:
         row = dict(row)
@@ -91,13 +97,17 @@ def _merge(baseline_rows, baseline_accepted, canary, rest, *, canary_name, rest_
                     and origin["cpu_result_sha256"] ==
                     item["execution_evidence"]["result_sha256"],
                     "revision candidate differs from frozen baseline/source/CPU")
+            hold = semantic_holds.get(item_id)
             row.update(prior_status=row["status"], prior_reason=row["reason"],
-                       status=result["status"], reason=result["reason"],
+                       revision_model_status=result["status"],
+                       status="semantic_quarantine" if hold else result["status"],
+                       reason=hold or result["reason"],
                        revision_run=run_name, revision_protocol="lcb-dag-revision-v3",
                        revision_result_sha256=digest(result),
                        revision_dag_sha256=digest(dag) if dag else None,
-                       revision_development_cohort=run_name == canary_name)
-            if dag is not None:
+                       revision_development_cohort=run_name == canary_name,
+                       independent_semantic_hold=bool(hold))
+            if dag is not None and not hold:
                 accepted.append({"schema_version": PROTOCOL, "item_id": item_id,
                                  "question_id": item["question_id"],
                                  "status": "model_accepted", "source": item,
@@ -140,7 +150,7 @@ def _html(rows, report):
             + "</pre><table>" + headers + body + "</table></html>").encode("utf-8")
 
 
-def export(baseline, canary_run, rest_run, output):
+def export(baseline, canary_run, rest_run, semantic_holds_path, output):
     baseline, canary_run, rest_run, output = map(lambda p: Path(p).resolve(),
                                                   (baseline, canary_run, rest_run, output))
     require(output != baseline and not baseline.is_relative_to(output)
@@ -155,13 +165,24 @@ def export(baseline, canary_run, rest_run, output):
             "frozen baseline changed")
     baseline_rows = _read_jsonl(baseline / "flow_175.jsonl")
     baseline_accepted = _read_jsonl(baseline / "accepted_candidates.jsonl")
+    semantic_holds_path = Path(semantic_holds_path).resolve()
+    hold_record = read_json(semantic_holds_path)
+    require(hold_record.get("schema_version") == "lcb-revision-semantic-holds-v1"
+            and isinstance(hold_record.get("holds"), list)
+            and all(isinstance(row, dict) and set(row) == {"item_id", "reason"}
+                    for row in hold_record["holds"]),
+            "explicit semantic hold inventory required")
+    semantic_holds = {row["item_id"]: row["reason"] for row in hold_record["holds"]}
+    require(len(semantic_holds) == len(hold_record["holds"]),
+            "duplicate semantic hold item")
     canary, canary_audit = _audited_rows(canary_run)
     rest, rest_audit = _audited_rows(rest_run)
     require(read_json(canary_run / "selection.json")["baseline_flow_sha256"] ==
             read_json(rest_run / "selection.json")["baseline_flow_sha256"] ==
             manifest["flow_sha256"], "revision batches used different baselines")
     rows, accepted = _merge(baseline_rows, baseline_accepted, canary, rest,
-                            canary_name=canary_run.name, rest_name=rest_run.name)
+                            canary_name=canary_run.name, rest_name=rest_run.name,
+                            semantic_holds=semantic_holds)
     accepted_bytes, flow_bytes = _jsonl(accepted), _jsonl(rows)
     accepted_sha = hashlib.sha256(accepted_bytes).hexdigest()
     for record in accepted:
@@ -172,6 +193,7 @@ def export(baseline, canary_run, rest_run, output):
               "revision_development_questions": 8, "revision_expansion_questions": 50,
               "revision_development_accepted": canary_audit["counts"].get("model_accepted", 0),
               "revision_expansion_accepted": rest_audit["counts"].get("model_accepted", 0),
+              "revision_semantic_quarantines": len(semantic_holds),
               "model_accepted": len(accepted),
               "counts": dict(Counter(row["status"] for row in rows)),
               "accepted_by_source": dict(Counter(record["source_status"] for record in accepted)),
@@ -181,6 +203,7 @@ def export(baseline, canary_run, rest_run, output):
               "baseline_accepted_sha256": manifest["accepted_sha256"],
               "canary_audit_sha256": digest(canary_audit),
               "rest_audit_sha256": digest(rest_audit),
+              "semantic_holds_sha256": digest(hold_record),
               "flow_sha256": hashlib.sha256(flow_bytes).hexdigest(),
               "accepted_sha256": accepted_sha,
               "claim": "Same-model source-derived candidates; no human or official gold"}
@@ -203,11 +226,12 @@ def main():
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--canary-run", type=Path, required=True)
     parser.add_argument("--rest-run", type=Path, required=True)
+    parser.add_argument("--semantic-holds", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     with run_lock(args.output):
         print(json.dumps(export(args.baseline, args.canary_run, args.rest_run,
-                                args.output), ensure_ascii=False))
+                                args.semantic_holds, args.output), ensure_ascii=False))
 
 
 if __name__ == "__main__":

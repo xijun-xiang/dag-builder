@@ -42,7 +42,8 @@ class LCBDAGRevisionExportTests(unittest.TestCase):
     def test_exact_8_plus_50_coverage_and_no_status_zero_filling(self):
         rows, accepted, canary, rest = fixture()
         merged, candidates = _merge(rows, accepted, canary, rest,
-                                    canary_name="canary", rest_name="rest")
+                                    canary_name="canary", rest_name="rest",
+                                    semantic_holds={})
         self.assertEqual(len(merged), 175)
         self.assertEqual(len(candidates), 71)
         self.assertEqual(merged[70]["prior_status"], "needs_review")
@@ -58,12 +59,26 @@ class LCBDAGRevisionExportTests(unittest.TestCase):
         removed = rest.pop("item-78")
         with self.assertRaisesRegex(ValueError, "8\\+50 revision cohort"):
             _merge(rows, accepted, canary, rest,
-                   canary_name="canary", rest_name="rest")
+                   canary_name="canary", rest_name="rest", semantic_holds={})
         rest["item-78"] = removed
         rest["item-70"] = canary["item-70"]
         with self.assertRaisesRegex(ValueError, "8\\+50 revision cohort"):
             _merge(rows, accepted, canary, rest,
-                   canary_name="canary", rest_name="rest")
+                   canary_name="canary", rest_name="rest", semantic_holds={})
+
+    def test_concrete_counterexample_is_quarantined_not_silently_discarded(self):
+        rows, accepted, canary, rest = fixture()
+        merged, candidates = _merge(rows, accepted, canary, rest,
+                                    canary_name="canary", rest_name="rest",
+                                    semantic_holds={"item-70": "counterexample"})
+        self.assertEqual(merged[70]["revision_model_status"], "model_accepted")
+        self.assertEqual(merged[70]["status"], "semantic_quarantine")
+        self.assertEqual(merged[70]["reason"], "counterexample")
+        self.assertEqual(len(candidates), 70)
+        with self.assertRaisesRegex(ValueError, "semantic holds"):
+            _merge(rows, accepted, canary, rest,
+                   canary_name="canary", rest_name="rest",
+                   semantic_holds={"item-78": "not model accepted"})
 
 
 if __name__ == "__main__":

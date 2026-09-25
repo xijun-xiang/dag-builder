@@ -8,4 +8,4 @@
 
 本轮目标是提高真正有根据的 DAG 覆盖率，而不是机械达到 50%。拒绝、未知、参考程序本身有误的题保留原状态。任何新增候选必须在独立审核后才能进入下一版统一发布；原始版仍可复现。
 
-两个 v3 批次都完成并分别通过 `python -m dag_builder.livecodebench_dag_revision_audit --root <批次>` 离线重放后，才可运行 `python -m dag_builder.livecodebench_dag_revision_export --baseline <冻结发布目录> --canary-run <v3八题目录> --rest-run <v3五十题目录> --output <新releases子目录>`。导出器要求两个批次恰好、无重复地覆盖原始 58 道待复核题，保留旧 70 个候选和其他 47 道题的状态，生成 175 题流转、候选 JSONL 和统一 DAG 查看器。8 题提示词开发子集在逐题记录中显式标记；导出不把模型复审等同于独立语义验收或人工批准。
+两个 v3 批次都完成并分别通过 `python -m dag_builder.livecodebench_dag_revision_audit --root <批次>` 离线重放后，才可运行 `python -m dag_builder.livecodebench_dag_revision_export --baseline <冻结发布目录> --canary-run <v3八题目录> --rest-run <v3五十题目录> --semantic-holds <独立语义隔离清单> --output <新releases子目录>`。导出器要求两个批次恰好、无重复地覆盖原始 58 道待复核题，保留旧 70 个候选和其他 47 道题的状态，生成 175 题流转、候选 JSONL 和统一 DAG 查看器。8 题提示词开发子集在逐题记录中显式标记；导出不把模型复审等同于独立语义验收或人工批准。独立抽查若发现原参考程序有具体反例，即使同模型复审写了 `accept`，也必须在 `lcb-revision-semantic-holds-v1` 清单中注明原因，逐题流转保留原判决而将其排除在候选发布之外。
