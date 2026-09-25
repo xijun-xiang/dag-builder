@@ -19,10 +19,11 @@ from .stages import payload
 from .storage import digest, private_dir, read_json, write_bytes_once, write_once
 from .t2ance_source import inspect_candidate
 from .t2ance_v3 import PROTOCOL as PROTOCOL_V3, assemble_graph_v3, normalize_v3, validate_audit_v3
+from .t2ance_v4 import PROTOCOL as PROTOCOL_V4, assemble_graph_v4, normalize_v4, validate_audit_v4
 
 PROTOCOL = "t2ance-lcb-normalize-v1"
 PROTOCOL_V2 = "t2ance-lcb-normalize-v2"
-PROTOCOLS = (PROTOCOL, PROTOCOL_V2, PROTOCOL_V3)
+PROTOCOLS = (PROTOCOL, PROTOCOL_V2, PROTOCOL_V3, PROTOCOL_V4)
 CALL_LIMIT = 240
 TOKEN_LIMIT = 16000000
 
@@ -47,7 +48,8 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
     quarantine = None
     quarantine_ids = set()
     if semantic_quarantine is not None:
-        require(prompt_version == PROTOCOL_V3, "semantic quarantine requires v3")
+        require(prompt_version in (PROTOCOL_V3, PROTOCOL_V4),
+                "semantic quarantine requires answer-backward protocol")
         quarantine = read_json(semantic_quarantine)
         require(isinstance(quarantine, dict) and set(quarantine) == {"protocol", "records"}
                 and quarantine["protocol"] == "t2ance-semantic-quarantine-v1"
@@ -198,7 +200,7 @@ def verify_prepared(root, config):
         original_by_id = {i["item_id"]: i for i in original_source}
         excluded = {r["item_id"] for r in selection["excluded"]
                     if r["reason"] == "independent_semantic_counterexample"}
-        require(proof["protocol"] == PROTOCOL_V3
+        require(proof["protocol"] in (PROTOCOL_V3, PROTOCOL_V4)
                 and digest(quarantine) == proof["semantic_quarantine_sha256"]
                 and digest(original_source) == proof["quarantined_source_items_sha256"]
                 == source_manifest["items_sha256"]
@@ -267,33 +269,38 @@ class T2ancePipeline(CALIBRIPipeline):
         return Pipeline.run(self, limit, progress, through)
 
     def process(self, item, through="review_dag"):
-        if self.config.prompt_version != PROTOCOL_V3:
+        if self.config.prompt_version not in (PROTOCOL_V3, PROTOCOL_V4):
             return super().process(item, through)
+        normalizer, assembler, reviewer = (
+            (normalize_v4, assemble_graph_v4, validate_audit_v4)
+            if self.config.prompt_version == PROTOCOL_V4 else
+            (normalize_v3, assemble_graph_v3, validate_audit_v3))
         directory = self.root / "items" / item["item_id"]
         if (directory / "result.json").exists():
             return read_json(directory / "result.json")
         data, stage = public_input(item), "normalize"
         try:
             proposal = self.request_stage(stage, item, data, payload(stage, data, self.config),
-                                          lambda value: normalize_v3(value, item))
-            normalized = normalize_v3(proposal, item)
+                                          lambda value: normalizer(value, item))
+            normalized = normalizer(proposal, item)
             write_once(directory / "normalization.json", normalized)
             stage = "dependencies"
             dependency_input = {**data, "normalized": normalized}
             dependencies = self.request_stage(stage, item, dependency_input,
                 payload(stage, dependency_input, self.config),
-                lambda value: assemble_graph_v3(value, normalized, item))
-            graph = assemble_graph_v3(dependencies, normalized, item)
+                lambda value: assembler(value, normalized, item))
+            graph = assembler(dependencies, normalized, item)
             stage = "review_dag"
             audit_input = {**data, "normalized": normalized, "candidate": graph}
             audit = self.request_stage(stage, item, audit_input,
                                        payload(stage, audit_input, self.config),
-                                       validate_audit_v3)
+                                       reviewer)
             if audit["decision"] != "accept":
                 return self._finish(item,
                     "rejected" if audit["decision"] == "reject" else "needs_review",
                     stage, audit["reason"])
-            dag = {"schema_version": "reference_dag_v1", "construction_protocol": PROTOCOL_V3,
+            dag = {"schema_version": "reference_dag_v1",
+                   "construction_protocol": self.config.prompt_version,
                    "item_id": item["item_id"], "source": item, "nodes": graph["nodes"],
                    "normalization": normalized, "graph_transformation": graph["transformation"],
                    "dag_review": audit, "execution_evidence": item["execution_evidence"],
@@ -331,7 +338,7 @@ def main():
     parser.add_argument("--prior-reserved-tokens", type=int, default=0)
     parser.add_argument("--prompt-version", choices=PROTOCOLS, default=PROTOCOL)
     parser.add_argument("--semantic-quarantine", type=Path,
-                        help="v3-only frozen code-bound semantic counterexample manifest")
+                        help="answer-backward frozen code-bound semantic counterexample manifest")
     args = parser.parse_args()
     os.umask(0o077)
     with run_lock(args.root):

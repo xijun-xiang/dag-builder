@@ -68,7 +68,7 @@ class Config:
             "gsm8k": ("gsm8k-v1",),
             "gpqa": ("gpqa-reference-v1", "gpqa-repair-v1", "gpqa-revision-v1"),
             "humaneval": ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"),
-            "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1", "livecodebench-editorial-pilot-v1", "calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "calibri-lcb-repair-v1", "calibri-lcb-repair-v2", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3"),
+            "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1", "livecodebench-editorial-pilot-v1", "calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "calibri-lcb-repair-v1", "calibri-lcb-repair-v2", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4"),
         }[self.task_type]
         if self.prompt_version not in versions:
             raise ValueError("prompt version does not match task_type")
@@ -102,7 +102,7 @@ class Config:
             "t2ance_reference_normalization",
         ):
             raise ValueError("unknown solution source")
-        if self.prompt_version in ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3"):
+        if self.prompt_version in ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4"):
             if self.solution_source != "t2ance_reference_normalization":
                 raise ValueError("t2ance requires explicit source-bound normalization")
         elif self.solution_source == "t2ance_reference_normalization":

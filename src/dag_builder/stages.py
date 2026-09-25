@@ -33,7 +33,7 @@ def stages_for(config):
     if config.task_type == "livecodebench":
         if config.prompt_version in ("calibri-lcb-repair-v1", "calibri-lcb-repair-v2"):
             return ("repair", "dependencies", "review_dag")
-        if config.prompt_version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3"):
+        if config.prompt_version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4"):
             return ("normalize", "dependencies", "review_dag")
         if config.prompt_version == "livecodebench-editorial-pilot-v1":
             return ("atomize", "review_dag")
@@ -55,7 +55,7 @@ def prompt(
                 or (version == "livecodebench-dag-v1" and stage in STAGES)
                 or (version == "livecodebench-editorial-pilot-v1" and stage in ("atomize", "review_dag"))
                 or (version in ("calibri-lcb-repair-v1", "calibri-lcb-repair-v2") and stage in ("repair", "dependencies", "review_dag"))
-                or (version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3")
+                or (version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4")
                     and stage in ("normalize", "dependencies", "review_dag"))):
             raise ValueError("unsupported LiveCodeBench stage or protocol")
         if version == "calibri-lcb-normalize-v2" and stage != "normalize":

@@ -15,10 +15,21 @@ from .storage import digest, read_json, write_once
 from .t2ance_pipeline import PROTOCOLS, verify_prepared
 from .t2ance_v3 import (PROTOCOL as PROTOCOL_V3, assemble_graph_v3,
                          normalize_v3, validate_audit_v3)
+from .t2ance_v4 import (PROTOCOL as PROTOCOL_V4, assemble_graph_v4,
+                         normalize_v4, validate_audit_v4)
+
+
+def _answer_backward_functions(version):
+    require(version in (PROTOCOL_V3, PROTOCOL_V4),
+            "unknown answer-backward audit protocol")
+    return ((normalize_v4, assemble_graph_v4, validate_audit_v4)
+            if version == PROTOCOL_V4 else
+            (normalize_v3, assemble_graph_v3, validate_audit_v3))
 
 
 def _replay_v3_recorded_calls(root, config, items):
     """Replay v3 requests without invoking the older CALIBRI validator."""
+    normalizer, assembler, reviewer = _answer_backward_functions(config.prompt_version)
     indexed = {item["item_id"]: item for item in items}
     for path in sorted(root.glob("items/*/*/attempt-*/request.json")):
         stage, item_id = path.parts[-3], path.parts[-4]
@@ -49,16 +60,17 @@ def _replay_v3_recorded_calls(root, config, items):
         output = parse_object(choices[0]["message"].get("content"))
         require(output == read_json(output_path), "v3 parsed output changed")
         if stage == "normalize":
-            normalize_v3(output, indexed[item_id])
+            normalizer(output, indexed[item_id])
         elif stage == "dependencies":
             normalized = read_json(path.parent.parent.parent / "normalization.json")
-            assemble_graph_v3(output, normalized, indexed[item_id])
+            assembler(output, normalized, indexed[item_id])
         else:
-            validate_audit_v3(output)
+            reviewer(output)
 
 
 def _replay_v3_terminal_item(root, item, config):
     """Derive every terminal label and accepted graph from returned content."""
+    normalize_fn, assemble_fn, review_fn = _answer_backward_functions(config.prompt_version)
     directory = root / "items" / item["item_id"]
     result = read_json(directory / "result.json")
     require(result["item_id"] == item["item_id"]
@@ -66,7 +78,7 @@ def _replay_v3_terminal_item(root, item, config):
             and result["stage"] in ("normalize", "dependencies", "review_dag"),
             "invalid v3 terminal result")
     data = public_input(item)
-    normalizer = lambda value: normalize_v3(value, item)
+    normalizer = lambda value: normalize_fn(value, item)
     failed = (result["status"] == "needs_review"
               and (directory / result["stage"] / "validation.json").exists())
     if failed and result["stage"] == "normalize":
@@ -82,7 +94,7 @@ def _replay_v3_terminal_item(root, item, config):
         require(read_json(directory / "normalization.json") == normalized,
                 "v3 normalization differs from returned content")
         dependency_data = {**data, "normalized": normalized}
-        graph_builder = lambda value: assemble_graph_v3(value, normalized, item)
+        graph_builder = lambda value: assemble_fn(value, normalized, item)
         if failed and result["stage"] == "dependencies":
             reason = _failed_stage(directory, "dependencies", dependency_data,
                                    config, graph_builder)
@@ -96,10 +108,10 @@ def _replay_v3_terminal_item(root, item, config):
             review_data = {**data, "normalized": normalized, "candidate": graph}
             if failed and result["stage"] == "review_dag":
                 reason = _failed_stage(directory, "review_dag", review_data,
-                                       config, validate_audit_v3)
+                                       config, review_fn)
             else:
                 review = _stage_output(directory, "review_dag", review_data,
-                                       config, validate_audit_v3)
+                                       config, review_fn)
                 require(review is not None, "v3 terminal has no review response")
                 expected_status = {"accept": "model_accepted", "reject": "rejected",
                                    "needs_review": "needs_review"}[review["decision"]]
@@ -111,7 +123,7 @@ def _replay_v3_terminal_item(root, item, config):
                     dag = read_json(directory / "dag.json")
                     expected_dag = {
                         "schema_version": "reference_dag_v1",
-                        "construction_protocol": PROTOCOL_V3,
+                        "construction_protocol": config.prompt_version,
                         "item_id": item["item_id"], "source": item,
                         "nodes": graph["nodes"], "normalization": normalized,
                         "graph_transformation": graph["transformation"],
@@ -153,8 +165,11 @@ def audit_completed(root):
     reserved = sum(read_json(path)["reserved_tokens"] for path in requests)
     require(reserved <= config.max_reserved_tokens, "t2ance budget exceeded")
     (_replay_v3_recorded_calls(root, config, items)
-     if config.prompt_version == PROTOCOL_V3 else
+     if config.prompt_version in (PROTOCOL_V3, PROTOCOL_V4) else
      _replay_recorded_calls(root, config))
+    normalizer = (normalize_v4 if config.prompt_version == PROTOCOL_V4 else normalize_v3)
+    assembler = (assemble_graph_v4 if config.prompt_version == PROTOCOL_V4 else assemble_graph_v3)
+    reviewer = (validate_audit_v4 if config.prompt_version == PROTOCOL_V4 else validate_audit_v3)
     origin = read_json(root / "code_origin.json")
     require(origin == read_json(root / "controller/code/snapshot_origin.json"),
             "t2ance code origin changed")
@@ -168,7 +183,7 @@ def audit_completed(root):
         item_id = item["item_id"]
         directory = root / "items" / item_id
         result = read_json(directory / "result.json")
-        if config.prompt_version == PROTOCOL_V3:
+        if config.prompt_version in (PROTOCOL_V3, PROTOCOL_V4):
             _replay_v3_terminal_item(root, item, config)
         require(result["item_id"] == item_id
                 and result["status"] in ("model_accepted", "needs_review", "rejected"),
@@ -177,8 +192,8 @@ def audit_completed(root):
         normalization_output = directory / "normalize/output.json"
         normalization_path = directory / "normalization.json"
         if normalization_output.exists():
-            normalized = (normalize_v3(read_json(normalization_output), item)
-                          if config.prompt_version == PROTOCOL_V3 else
+            normalized = (normalizer(read_json(normalization_output), item)
+                          if config.prompt_version in (PROTOCOL_V3, PROTOCOL_V4) else
                           normalize(read_json(normalization_output), item,
                                     prompt_version=config.prompt_version))
             require(normalization_path.is_file()
@@ -191,8 +206,8 @@ def audit_completed(root):
         if dependencies_output.exists():
             require(normalized is not None and review_input.is_file(),
                     "t2ance graph lacks normalization or review input")
-            graph = (assemble_graph_v3(read_json(dependencies_output), normalized, item)
-                     if config.prompt_version == PROTOCOL_V3 else
+            graph = (assembler(read_json(dependencies_output), normalized, item)
+                     if config.prompt_version in (PROTOCOL_V3, PROTOCOL_V4) else
                      assemble_graph(read_json(dependencies_output), normalized, item))
             require(read_json(review_input)["input"]["candidate"] == graph,
                     "t2ance review candidate differs from recorded dependencies")
@@ -205,13 +220,13 @@ def audit_completed(root):
                     and dag["item_id"] == item_id and dag["source"] == item
                     and dag["construction_protocol"] == config.prompt_version
                     and graph is not None and dag["nodes"] == graph["nodes"]
-                    and (config.prompt_version != PROTOCOL_V3 or
+                    and (config.prompt_version not in (PROTOCOL_V3, PROTOCOL_V4) or
                          dag.get("graph_transformation") == graph["transformation"])
                     and dag["normalization"] == normalized
                     and dag["dag_review"] == read_json(directory / "review_dag/output.json")
                     and dag["formal_eligible"] is False,
                     "t2ance accepted graph/source mismatch")
-            (validate_audit_v3 if config.prompt_version == PROTOCOL_V3
+            (reviewer if config.prompt_version in (PROTOCOL_V3, PROTOCOL_V4)
              else validate_audit)(dag["dag_review"])
             require(dag["dag_review"]["decision"] == "accept",
                     "t2ance graph lacks accepting review")
