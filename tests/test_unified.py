@@ -132,6 +132,35 @@ class UnifiedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "t2ance protocol"):
             convert_record(wrong, "livecodebench_v6", SOURCE_HASH)
 
+    def test_t2ance_v4_release_keeps_source_and_protocol_explicit(self):
+        source = livecodebench()
+        source["schema_version"] = "lcb-v6-t2ance-v4-candidates-v1"
+        source["source_status"] = "t2ance_derived_tested_reference"
+        source["source"]["reference_origin"] = "t2ance_model_output"
+        source["dag"]["source"] = source["source"]
+        source["dag"]["construction_protocol"] = "t2ance-lcb-normalize-v4"
+        source["dag"]["normalization"] = {"protocol": "t2ance-lcb-normalize-v4"}
+        source["dag_sha256"] = digest(source["dag"])
+        row = convert_record(source, "livecodebench_v6", SOURCE_HASH)
+        validate_row(row)
+        self.assertEqual(row["review"]["source_status"],
+                         "t2ance_derived_tested_reference")
+        wrong = deepcopy(source)
+        wrong["dag"]["normalization"]["protocol"] = "t2ance-lcb-normalize-v3"
+        wrong["dag_sha256"] = digest(wrong["dag"])
+        with self.assertRaisesRegex(ValueError, "t2ance protocol"):
+            convert_record(wrong, "livecodebench_v6", SOURCE_HASH)
+        wrong = deepcopy(source)
+        wrong["dag"]["construction_protocol"] = "t2ance-lcb-normalize-v3"
+        wrong["dag"]["normalization"]["protocol"] = "t2ance-lcb-normalize-v3"
+        wrong["dag_sha256"] = digest(wrong["dag"])
+        with self.assertRaisesRegex(ValueError, "t2ance protocol"):
+            convert_record(wrong, "livecodebench_v6", SOURCE_HASH)
+        wrong = deepcopy(source)
+        wrong["schema_version"] = "lcb-v6-source-stratified-candidates-v1"
+        with self.assertRaisesRegex(ValueError, "t2ance protocol"):
+            convert_record(wrong, "livecodebench_v6", SOURCE_HASH)
+
     def test_livecodebench_rejects_unpassed_or_tampered_source(self):
         source = livecodebench()
         source["source"]["execution_evidence"]["status"] = "failed"

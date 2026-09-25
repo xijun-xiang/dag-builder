@@ -105,7 +105,9 @@ def convert_record(record, benchmark, source_file_sha256):
                  or (schema_version in ("lcb-v6-source-stratified-candidates-v1",
                                         "lcb-v6-source-stratified-candidates-split-repair-v1")
                      and source_status in ("calibri_derived_tested_reference",
-                                           "t2ance_derived_tested_reference")),
+                                           "t2ance_derived_tested_reference"))
+                 or (schema_version == "lcb-v6-t2ance-v4-candidates-v1"
+                     and source_status == "t2ance_derived_tested_reference"),
                  "LCB source protocol mismatch")
         _require(record.get("status", "model_accepted") == "model_accepted"
                  and record.get("human_approved") is False
@@ -113,12 +115,16 @@ def convert_record(record, benchmark, source_file_sha256):
                  and source.get("subset") == "v6"
                  and source.get("task_type") == "livecodebench", "LCB source contract mismatch")
         if source_status == "t2ance_derived_tested_reference":
+            protocol = source_dag.get("construction_protocol") if isinstance(source_dag, dict) else None
+            allowed = (("t2ance-lcb-normalize-v4",) if schema_version ==
+                       "lcb-v6-t2ance-v4-candidates-v1" else
+                       ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2",
+                        "t2ance-lcb-normalize-v3"))
             _require(isinstance(source_dag, dict)
                      and source.get("reference_origin") == "t2ance_model_output"
-                     and source_dag.get("construction_protocol") in
-                     ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2")
-                     and source_dag.get("normalization", {}).get("protocol") ==
-                     source_dag.get("construction_protocol"), "t2ance protocol/source mismatch")
+                     and protocol in allowed
+                     and source_dag.get("normalization", {}).get("protocol") == protocol,
+                     "t2ance protocol/source mismatch")
         _require(isinstance(source_dag, dict) and source_dag.get("source") == source
                  and source_dag.get("item_id") == item_id
                  and source_dag.get("formal_eligible") is False

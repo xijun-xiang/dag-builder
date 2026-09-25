@@ -24,8 +24,13 @@ from .t2ance_v4 import PROTOCOL as PROTOCOL_V4, assemble_graph_v4, normalize_v4,
 PROTOCOL = "t2ance-lcb-normalize-v1"
 PROTOCOL_V2 = "t2ance-lcb-normalize-v2"
 PROTOCOLS = (PROTOCOL, PROTOCOL_V2, PROTOCOL_V3, PROTOCOL_V4)
-CALL_LIMIT = 240
-TOKEN_LIMIT = 16000000
+# The original 240 / 16M campaign allocation was exhausted by conservative
+# byte-based accounting during the full CPU-verified cohort.  A new,
+# explicitly versioned continuation retains every old request and response;
+# these are upper bounds for additional allocations, not permission to retry
+# semantic failures or overwrite an earlier run.
+CALL_LIMIT = 600
+TOKEN_LIMIT = 60000000
 
 
 def prepare(source, execution, expected_manifest, root, *, limit=None,
