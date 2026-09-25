@@ -31,7 +31,7 @@ REVISION_STAGES = ("revise", "audit", "adjudicate")
 
 def stages_for(config):
     if config.task_type == "livecodebench":
-        if config.prompt_version == "lcb-dag-revision-v1":
+        if config.prompt_version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2"):
             return ("revise", "dependencies", "review_dag")
         if config.prompt_version in ("calibri-lcb-repair-v1", "calibri-lcb-repair-v2"):
             return ("repair", "dependencies", "review_dag")
@@ -54,7 +54,8 @@ def prompt(
 ):
     if task_type == "livecodebench":
         if not ((version == "livecodebench-reference-v1" and stage == "reference_code")
-                or (version == "lcb-dag-revision-v1" and stage in ("revise", "dependencies", "review_dag"))
+                or (version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2")
+                    and stage in ("revise", "dependencies", "review_dag"))
                 or (version == "livecodebench-dag-v1" and stage in STAGES)
                 or (version == "livecodebench-editorial-pilot-v1" and stage in ("atomize", "review_dag"))
                 or (version in ("calibri-lcb-repair-v1", "calibri-lcb-repair-v2") and stage in ("repair", "dependencies", "review_dag"))
@@ -73,6 +74,12 @@ def prompt(
             base_version = "calibri-lcb-normalize-v1" if stage == "dependencies" else "calibri-lcb-repair-v1"
             base = files("dag_builder").joinpath("prompts", base_version, stage + ".md").read_text(encoding="utf-8")
             supplement = files("dag_builder").joinpath("prompts", version, stage + ".md").read_text(encoding="utf-8")
+            return base + "\n" + supplement
+        if version == "lcb-dag-revision-v2":
+            base = files("dag_builder").joinpath("prompts", "lcb-dag-revision-v1",
+                                                   stage + ".md").read_text(encoding="utf-8")
+            supplement = files("dag_builder").joinpath("prompts", version,
+                                                         stage + ".md").read_text(encoding="utf-8")
             return base + "\n" + supplement
         return files("dag_builder").joinpath("prompts", version, stage + ".md").read_text(encoding="utf-8")
     allowed = (

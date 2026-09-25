@@ -23,6 +23,8 @@ from .storage import digest, private_dir, read_json, write_once
 from .t2ance_v4 import assemble_graph_v4, normalize_v4, validate_audit_v4
 
 PROTOCOL = "lcb-dag-revision-v1"
+PROTOCOL_V2 = "lcb-dag-revision-v2"
+PROTOCOLS = (PROTOCOL, PROTOCOL_V2)
 CALIBRI_RUNS = ("calibri-normalize4-v2", "calibri-full-continuation87-v1")
 T2ANCE_RUNS = (
     "t2ance-v4-heldout6-20260925",
@@ -51,8 +53,10 @@ def _source_index(base):
     return result
 
 
-def prepare(base, baseline, root, *, question_ids=None, excluded_question_ids=()):
+def prepare(base, baseline, root, *, question_ids=None, excluded_question_ids=(),
+            protocol=PROTOCOL):
     base, baseline, root = map(lambda p: Path(p).resolve(), (base, baseline, root))
+    require(protocol in PROTOCOLS, "unknown revision protocol")
     require(root.is_relative_to(base) and not root.is_relative_to(base / "releases"),
             "revision run must be a new private batch under the campaign")
     rows = _read_jsonl(baseline / "flow_175.jsonl")
@@ -111,7 +115,7 @@ def prepare(base, baseline, root, *, question_ids=None, excluded_question_ids=()
                             "feedback_sha256": digest(note)}
     root = private_dir(root)
     require(not any(root.iterdir()), "revision output must be a new empty directory")
-    selection = {"protocol": PROTOCOL, "selected_ids": [i["item_id"] for i in items],
+    selection = {"protocol": protocol, "selected_ids": [i["item_id"] for i in items],
                  "selected_question_ids": [str(i["question_id"]) for i in items],
                  "baseline_flow_sha256": manifest["flow_sha256"],
                  "excluded_held_question_ids": sorted(excluded),
@@ -121,7 +125,7 @@ def prepare(base, baseline, root, *, question_ids=None, excluded_question_ids=()
     for item_id, note in feedback.items():
         write_once(root / "feedback" / (item_id + ".json"), note)
     write_once(root / "revision-manifest.json", {
-        "protocol": PROTOCOL, "baseline": str(baseline), "selected": len(items),
+        "protocol": protocol, "baseline": str(baseline), "selected": len(items),
         "items_sha256": digest(items), "selection_sha256": digest(selection),
         "origins": origins, "human_approved": 0, "formal_eligible": False,
     })
@@ -134,9 +138,9 @@ def verify_prepared(root, config):
     root = Path(root)
     manifest = read_json(root / "revision-manifest.json")
     items, selection = read_json(root / "items.json"), read_json(root / "selection.json")
-    require(config.task_type == "livecodebench" and config.prompt_version == PROTOCOL
+    require(config.task_type == "livecodebench" and config.prompt_version in PROTOCOLS
             and config.solution_source == "reference_dag_revision"
-            and manifest["protocol"] == selection["protocol"] == PROTOCOL
+            and manifest["protocol"] == selection["protocol"] == config.prompt_version
             and manifest["items_sha256"] == digest(items)
             and manifest["selection_sha256"] == digest(selection)
             and len(items) == manifest["selected"]
@@ -200,7 +204,8 @@ class LCBDAGRevisionPipeline(Pipeline):
             if audit["decision"] != "accept":
                 return self._finish(item, "rejected" if audit["decision"] == "reject"
                                     else "needs_review", stage, audit["reason"])
-            dag = {"schema_version": "reference_dag_v1", "construction_protocol": PROTOCOL,
+            dag = {"schema_version": "reference_dag_v1",
+                   "construction_protocol": self.config.prompt_version,
                    "item_id": item["item_id"], "source": item, "nodes": graph["nodes"],
                    "normalization": normalized, "dag_review": audit,
                    "revision_change_summary": revision["change_summary"],
@@ -231,11 +236,13 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--question-ids", help="Comma-separated fixed canary question IDs")
     parser.add_argument("--exclude-question-ids", help="Comma-separated completed canary IDs")
+    parser.add_argument("--protocol", choices=PROTOCOLS, default=PROTOCOL)
     args = parser.parse_args()
     parse = lambda value: None if value is None else tuple(x for x in value.split(",") if x)
     print(json.dumps(prepare(args.base, args.baseline, args.root,
         question_ids=parse(args.question_ids),
-        excluded_question_ids=parse(args.exclude_question_ids) or ())))
+        excluded_question_ids=parse(args.exclude_question_ids) or (),
+        protocol=args.protocol)))
 
 
 if __name__ == "__main__":
