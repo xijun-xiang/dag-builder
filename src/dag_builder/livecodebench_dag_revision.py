@@ -24,7 +24,8 @@ from .t2ance_v4 import assemble_graph_v4, normalize_v4, validate_audit_v4
 
 PROTOCOL = "lcb-dag-revision-v1"
 PROTOCOL_V2 = "lcb-dag-revision-v2"
-PROTOCOLS = (PROTOCOL, PROTOCOL_V2)
+PROTOCOL_V3 = "lcb-dag-revision-v3"
+PROTOCOLS = (PROTOCOL, PROTOCOL_V2, PROTOCOL_V3)
 CALIBRI_RUNS = ("calibri-normalize4-v2", "calibri-full-continuation87-v1")
 T2ANCE_RUNS = (
     "t2ance-v4-heldout6-20260925",
@@ -51,6 +52,24 @@ def _source_index(base):
                 result[item_id] = (tier, name, item)
     require(len(result) == 151, "expected 91 CALIBRI and 60 t2ance source items")
     return result
+
+
+def _compact_prior(normalized, graph):
+    """Remove repeated source spans/code while retaining all prior claim text."""
+    if normalized is not None:
+        normalized = {"protocol": normalized["protocol"],
+                      "steps": [{key: node[key] for key in (
+                          "node_id", "kind", "statement", "source_refs",
+                          "support_type", "normalization_note")}
+                          for node in normalized["nodes"]],
+                      "omissions": normalized["omissions"]}
+    if graph is not None:
+        graph = {"nodes": [{key: node[key] for key in (
+            "node_id", "kind", "parents", "justification") if key in node}
+            | {"statement": "<frozen reference program attached in C source units>"
+               if node["kind"] == "answer" else node["statement"]}
+            for node in graph["nodes"]]}
+    return normalized, graph
 
 
 def prepare(base, baseline, root, *, question_ids=None, excluded_question_ids=(),
@@ -103,6 +122,8 @@ def prepare(base, baseline, root, *, question_ids=None, excluded_question_ids=()
             latest = base / row["repair_terminal_run"] / "items" / item_id
             if (latest / "review_dag/input.json").exists():
                 prior_graph = read_json(latest / "review_dag/input.json")["input"].get("candidate")
+        if protocol == PROTOCOL_V3:
+            prior_normalized, prior_graph = _compact_prior(prior_normalized, prior_graph)
         note = {"source_tier": tier, "prior_status": row["status"],
                 "prior_reason": row["reason"],
                 "prior_normalization": prior_normalized,
@@ -180,7 +201,13 @@ class LCBDAGRevisionPipeline(Pipeline):
         tier, stage = feedback["source_tier"], "revise"
         public = public_input(item)
         try:
-            revision_input = {**public, "source_tier": tier, "prior_feedback": feedback}
+            revision_public = dict(public)
+            if self.config.prompt_version == PROTOCOL_V3:
+                # Source units already contain every code line. Avoid sending
+                # the full program a second time in the same revision request.
+                revision_public.pop("reference_code")
+            revision_input = {**revision_public, "source_tier": tier,
+                              "prior_feedback": feedback}
             revision = self.request_stage(stage, item, revision_input,
                 payload(stage, revision_input, self.config),
                 lambda value: _normalize(value, item, tier))

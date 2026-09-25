@@ -31,7 +31,7 @@ REVISION_STAGES = ("revise", "audit", "adjudicate")
 
 def stages_for(config):
     if config.task_type == "livecodebench":
-        if config.prompt_version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2"):
+        if config.prompt_version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2", "lcb-dag-revision-v3"):
             return ("revise", "dependencies", "review_dag")
         if config.prompt_version in ("calibri-lcb-repair-v1", "calibri-lcb-repair-v2"):
             return ("repair", "dependencies", "review_dag")
@@ -54,7 +54,7 @@ def prompt(
 ):
     if task_type == "livecodebench":
         if not ((version == "livecodebench-reference-v1" and stage == "reference_code")
-                or (version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2")
+                or (version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2", "lcb-dag-revision-v3")
                     and stage in ("revise", "dependencies", "review_dag"))
                 or (version == "livecodebench-dag-v1" and stage in STAGES)
                 or (version == "livecodebench-editorial-pilot-v1" and stage in ("atomize", "review_dag"))
@@ -78,6 +78,11 @@ def prompt(
         if version == "lcb-dag-revision-v2":
             base = files("dag_builder").joinpath("prompts", "lcb-dag-revision-v1",
                                                    stage + ".md").read_text(encoding="utf-8")
+            supplement = files("dag_builder").joinpath("prompts", version,
+                                                         stage + ".md").read_text(encoding="utf-8")
+            return base + "\n" + supplement
+        if version == "lcb-dag-revision-v3":
+            base = prompt(stage, "lcb-dag-revision-v2", task_type, solution_source)
             supplement = files("dag_builder").joinpath("prompts", version,
                                                          stage + ".md").read_text(encoding="utf-8")
             return base + "\n" + supplement

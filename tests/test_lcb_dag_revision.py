@@ -4,7 +4,7 @@ import unittest
 
 from dag_builder.config import Config
 from dag_builder.stages import prompt, stages_for
-from dag_builder.livecodebench_dag_revision import _normalize
+from dag_builder.livecodebench_dag_revision import _compact_prior, _normalize
 from dag_builder.schemas import InvalidOutput
 
 
@@ -30,6 +30,28 @@ class LCBDAGRevisionTests(unittest.TestCase):
         self.assertIn("every retained normalized node", prompt(
             "dependencies", config.prompt_version, config.task_type,
             config.solution_source))
+
+    def test_v3_compacts_duplicate_code_without_losing_claims(self):
+        config = self.config(version="lcb-dag-revision-v3")
+        self.assertEqual(stages_for(config), ("revise", "dependencies", "review_dag"))
+        self.assertIn("ordered `C` source units", prompt(
+            "revise", config.prompt_version, config.task_type,
+            config.solution_source))
+        normalized = {"protocol": "p", "nodes": [{"node_id": 1,
+            "kind": "given", "statement": "important claim", "source_refs": ["Q0001"],
+            "support_type": "source_supported", "normalization_note": "grounded",
+            "source_spans": [{"text": "duplicate source"}]}], "omissions": []}
+        graph = {"nodes": [{"node_id": 1, "kind": "given",
+                            "statement": "important claim", "parents": [],
+                            "justification": "root", "source_spans": []},
+                           {"node_id": 2, "kind": "answer",
+                            "statement": "long code", "parents": [1],
+                            "justification": "derived"}]}
+        compact_normalized, compact_graph = _compact_prior(normalized, graph)
+        self.assertEqual(compact_normalized["steps"][0]["statement"], "important claim")
+        self.assertNotIn("source_spans", compact_normalized["steps"][0])
+        self.assertEqual(compact_graph["nodes"][0]["statement"], "important claim")
+        self.assertNotIn("long code", str(compact_graph))
 
     def test_protocol_cannot_claim_an_unrelated_solution_source(self):
         with self.assertRaisesRegex(ValueError, "dedicated source label"):
