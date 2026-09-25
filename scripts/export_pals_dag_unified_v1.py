@@ -9,7 +9,7 @@ from dag_builder.unified import convert_file
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True)
-    parser.add_argument("--benchmark", choices=("gpqa_diamond", "humaneval", "livecodebench_v6"), required=True)
+    parser.add_argument("--benchmark", choices=("gpqa_diamond", "humaneval", "livecodebench_v6", "mmlu"), required=True)
     parser.add_argument("--expected-sha256", required=True)
     parser.add_argument("--output-dir", help="omit to validate without writing")
     args = parser.parse_args()

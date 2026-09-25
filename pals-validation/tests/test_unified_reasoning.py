@@ -10,6 +10,7 @@ from pals_validation.data import normalize
 from pals_validation.io import digest, read
 from pals_validation.prepare import prepare
 from pals_validation.protocol import question, system_prompt
+from pals_validation.unified import MMLU_SUBSETS
 from pals_validation.run import init_run, worker
 
 
@@ -45,6 +46,12 @@ def row(benchmark="gsm8k", subset="main"):
 
 
 class UnifiedReasoningTests(unittest.TestCase):
+    def test_mmlu_whitelist_covers_all_official_subjects(self):
+        self.assertEqual(len(MMLU_SUBSETS), 57)
+        for subset in ("econometrics", "business_ethics", "formal_logic",
+                       "world_religions", "high_school_physics"):
+            self.assertIn(subset, MMLU_SUBSETS)
+
     def test_gsm8k_has_open_answer_prompt_and_no_answer_node_in_steps(self):
         record = row()
         case = normalize(record, "gsm8k")
@@ -56,7 +63,9 @@ class UnifiedReasoningTests(unittest.TestCase):
 
     def test_mmlu_has_labeled_choices_and_subset_provenance(self):
         for subset in ("abstract_algebra", "elementary_mathematics",
-                       "high_school_psychology", "human_sexuality"):
+                       "high_school_psychology", "human_sexuality",
+                       "econometrics", "business_ethics", "formal_logic",
+                       "world_religions"):
             with self.subTest(subset=subset):
                 case = normalize(row("mmlu", subset), "mmlu")
                 self.assertEqual(case["domain"], subset)

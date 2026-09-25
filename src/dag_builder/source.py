@@ -116,6 +116,8 @@ def select(items, count, seed):
             excluded.append({"item_id": item["item_id"], "reason": reason})
         else:
             eligible.append(item)
+    if count is None:
+        count = len(eligible)
     require(
         type(count) is int and count > 0 and len(eligible) >= count,
         "insufficient eligible source items",
@@ -132,7 +134,9 @@ def select(items, count, seed):
         "selected_ids": [i["item_id"] for i in chosen],
         "excluded": excluded,
         "sampling": "ascending SHA256(seed,item_id), without replacement",
-        "scope": "engineering pilot, not confirmatory; no score-based selection or replenishment",
+        "scope": ("all source-eligible items; no score-based selection or replenishment"
+                  if len(chosen) == len(eligible) else
+                  "engineering pilot, not confirmatory; no score-based selection or replenishment"),
     }
 
 

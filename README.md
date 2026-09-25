@@ -38,6 +38,9 @@
 | MMLU | 模型生成；支持保存原生 `reasoning_content` 后整理 | [原生推理协议](docs/mmlu-thinking-pilot.md) |
 | GSM8K | 独立生成、答案条件生成或官方解答等显式模式 | `configs/gsm8k-*.json` |
 
+MMLU 全部 57 个独立学科的跨学科构图、预算化批量入口和 PALS 格式导出见
+[MMLU 全学科协议](docs/mmlu-all-subjects.md)。原物理题提示词与旧结果保持不变。
+
 ## 安装
 
 Python **3.10+**。建议在仓库根目录创建独立环境：

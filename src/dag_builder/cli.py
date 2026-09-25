@@ -21,6 +21,9 @@ from .repair_loop import RevisionPipeline
 from .repair_source import prepare_repair
 from .report import overview, render
 from .source import prepare
+from .mmlu_campaign import prepare_all as prepare_all_mmlu, run_all as run_all_mmlu
+from .mmlu_catalog import MMLU_SUBJECTS
+from .mmlu_export import export_subject as export_mmlu_subject, export_campaign as export_mmlu_campaign
 from .stages import THINKING_STAGES
 from .storage import private_dir, read_json, run_lock
 
@@ -98,8 +101,37 @@ def main():
     source.add_argument(
         "--split", default="test", choices=("dev", "validation", "test")
     )
-    source.add_argument("--count", type=int, default=30)
+    source_count = source.add_mutually_exclusive_group()
+    source_count.add_argument("--count", type=int, default=30)
+    source_count.add_argument("--all-eligible", action="store_true",
+                              help="Select every mechanically eligible item")
     source.add_argument("--seed", type=int, default=20260909)
+    mmlu_all = commands.add_parser("prepare-mmlu-all", help="Prepare all 57 pinned MMLU subjects, no API calls")
+    mmlu_all.add_argument("--root", required=True, type=Path)
+    mmlu_all.add_argument("--revision", required=True)
+    mmlu_all.add_argument("--split", default="test", choices=("dev", "validation", "test"))
+    mmlu_all.add_argument("--count-per-subject", type=int,
+                          help="Omit to select all mechanically eligible items")
+    mmlu_all.add_argument("--seed", type=int, default=20260909)
+    mmlu_all.add_argument("--source-dir", type=Path,
+                          help="Optional local Parquet tree: SUBJECT/SPLIT-00000-of-00001.parquet")
+    mmlu_run = commands.add_parser("run-mmlu-all", help="Explicitly budgeted sequential MMLU campaign")
+    mmlu_run.add_argument("--root", required=True, type=Path)
+    mmlu_run.add_argument("--config", required=True, type=Path)
+    mmlu_run.add_argument("--key-file", type=Path)
+    selection = mmlu_run.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--all-subjects", action="store_true")
+    selection.add_argument("--subjects", help="Comma-separated official subject IDs")
+    mmlu_run.add_argument("--max-total-calls", required=True, type=int)
+    mmlu_run.add_argument("--max-total-reserved-tokens", required=True, type=int)
+    mmlu_run.add_argument("--limit-per-subject", type=int)
+    mmlu_run.add_argument("--resilient", action="store_true")
+    mmlu_export = commands.add_parser("export-mmlu-subject", help="Offline all-outcome and unified PALS export")
+    mmlu_export.add_argument("--root", required=True, type=Path)
+    mmlu_export.add_argument("--output-dir", required=True, type=Path)
+    mmlu_export_all = commands.add_parser("export-mmlu-all", help="Require all 57 completed subjects, then combine PALS exports")
+    mmlu_export_all.add_argument("--campaign-root", required=True, type=Path)
+    mmlu_export_all.add_argument("--output-dir", required=True, type=Path)
     for name in ("probe", "probe-contract", "run", "repair", "recover-humaneval"):
         command = commands.add_parser(name)
         command.add_argument("--config", required=True, type=Path)
@@ -183,11 +215,31 @@ def main():
                     args.subset
                     or ("high_school_physics" if args.dataset == "mmlu" else "main"),
                     args.split,
-                    args.count,
+                    None if args.all_eligible else args.count,
                     args.seed,
                     args.dataset,
                     args.source_parquet,
                 )
+        elif args.command == "prepare-mmlu-all":
+            if args.root.exists() and not args.root.is_dir():
+                raise ValueError("campaign root must be a directory")
+            with run_lock(args.root):
+                result = prepare_all_mmlu(args.root, args.revision, args.split,
+                                          args.count_per_subject, args.seed, args.source_dir)
+        elif args.command == "run-mmlu-all":
+            config = Config.load(args.config)
+            subjects = list(MMLU_SUBJECTS) if args.all_subjects else args.subjects.split(",")
+            if any(subject != subject.strip() for subject in subjects):
+                raise ValueError("subject IDs must not contain whitespace")
+            client = APIClient(config, load_key(config.key_env, args.key_file))
+            result = run_all_mmlu(args.root, config, client, subjects,
+                                  args.max_total_calls, args.max_total_reserved_tokens,
+                                  args.limit_per_subject, args.resilient,
+                                  progress=lambda row: print(json.dumps(row), flush=True))
+        elif args.command == "export-mmlu-subject":
+            result = export_mmlu_subject(args.root, args.output_dir)
+        elif args.command == "export-mmlu-all":
+            result = export_mmlu_campaign(args.campaign_root, args.output_dir)
         elif args.command in ("probe", "probe-contract", "run", "repair", "recover-humaneval"):
             config = Config.load(args.config)
             client = APIClient(config, load_key(config.key_env, args.key_file))
@@ -236,7 +288,7 @@ def main():
                     else str(release(root, args.human_review))
                 )
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        if args.command in ("run", "repair", "recover-humaneval") and result["paused"]:
+        if args.command in ("run", "run-mmlu-all", "repair", "recover-humaneval") and result["paused"]:
             return 2
         if args.command == "probe-contract" and not result["passed"]:
             return 2

@@ -19,6 +19,8 @@ def report_title(items, selection):
         ) and selection.get("candidate_count") == len(items)
         return "GSM8K DAG 构造全量审查" if is_full_dataset else "GSM8K DAG 构造审查"
     if task_types == {"mmlu"}:
+        if selection.get("scope", "").startswith("all source-eligible"):
+            return "MMLU DAG 构造全量审查"
         return "MMLU DAG 构造试点审查"
     if task_types == {"gpqa"}:
         return "GPQA-Diamond DAG 构造审查"
@@ -86,7 +88,7 @@ def overview(root):
         "returned_models": dict(returned_models),
         "monetary_cost": None,
         "cost_note": "No verified unit price configured; missing usage is not zero cost.",
-        "claim": "engineering pilot; same-model synthesis/review, no PALS validation claim",
+        "claim": "same-model synthesis/review; not independent gold or a PALS validation result",
     }
 
 

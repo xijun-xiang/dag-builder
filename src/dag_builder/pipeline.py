@@ -24,6 +24,7 @@ from .schemas import (
     text,
 )
 from .stages import (
+    MMLU_NATIVE_VERSIONS,
     payload,
     prompt,
     reference_solution,
@@ -329,7 +330,7 @@ class Pipeline:
             lambda output: validate(stage, output, data, self.config.solution_source,
                                     prompt_version=self.config.prompt_version),
             native=stage == "solve"
-            and self.config.prompt_version == "mmlu-thinking-v1",
+            and self.config.prompt_version in MMLU_NATIVE_VERSIONS,
         )
 
     def request_stage(

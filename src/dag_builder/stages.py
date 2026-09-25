@@ -27,6 +27,7 @@ THINKING_STAGES = ("solve", "structure_solution", *STAGES[1:])
 REFERENCE_STAGES = STAGES[1:]
 REPAIR_STAGES = ("repair", "justify", "review_repair")
 REVISION_STAGES = ("revise", "audit", "adjudicate")
+MMLU_NATIVE_VERSIONS = ("mmlu-thinking-v1", "mmlu-general-thinking-v1")
 
 
 def stages_for(config):
@@ -44,7 +45,7 @@ def stages_for(config):
         return REPAIR_STAGES
     if config.task_type == "gpqa":
         return REFERENCE_STAGES
-    return THINKING_STAGES if config.prompt_version == "mmlu-thinking-v1" else STAGES
+    return THINKING_STAGES if config.prompt_version in MMLU_NATIVE_VERSIONS else STAGES
 
 
 def prompt(
@@ -80,12 +81,12 @@ def prompt(
         else REFERENCE_STAGES
         if task_type == "gpqa"
         else THINKING_STAGES
-        if version == "mmlu-thinking-v1"
+        if version in MMLU_NATIVE_VERSIONS
         else STAGES
     )
     if stage not in allowed:
         raise ValueError("unknown stage or prompt version")
-    if task_type == "mmlu" and version not in ("v1", "mmlu-thinking-v1"):
+    if task_type == "mmlu" and version not in ("v1", *MMLU_NATIVE_VERSIONS):
         raise ValueError("unsupported mmlu prompt version")
     if task_type == "gsm8k" and version != "gsm8k-v1":
         raise ValueError("gsm8k requires prompt version gsm8k-v1")
@@ -215,7 +216,7 @@ def request_controls(config, *, native_solve=False):
 
 
 def payload(stage, data, config):
-    native = config.prompt_version == "mmlu-thinking-v1"
+    native = config.prompt_version in MMLU_NATIVE_VERSIONS
     if native or config.task_type == "gpqa":
         # Explicit labels in every model request; preserve the original item bytes.
         data = dict(data, question=dict(data["question"]))

@@ -49,7 +49,7 @@
 }
 ```
 
-上例展示字段形状，不是可直接验哈希的真实数据行。HumanEval 使用相同结构：`benchmark="humaneval"`，`problem.choices=null`，`problem.entry_point` 为函数名，`answer={"kind":"code","value":"官方 completion"}`。LiveCodeBench v6 同样使用这组字段：`benchmark="livecodebench_v6"`；functional 题保留函数入口，并在 `problem.question` 后附上原始 `starter_code` 供 PALS 看见完整公开上下文；stdin 题的 `problem.entry_point=null` 且无 starter code。`answer.value` 是经固定 CPU 测试通过的 CALIBRI 派生参考程序，**不是官方 gold**。将来接入其他 benchmark 时须仍输出同一组字段；需要新字段时发布 v2，不在 v1 中悄悄加字段。
+上例展示字段形状，不是可直接验哈希的真实数据行。MMLU 的 57 个独立学科也使用此结构：`benchmark="mmlu"`，`problem.domain` 与 `provenance.subset` 保留学科名，四个选项与标准答案分开存储；模型通过候选仍标记 `human_approved=false`，见[全学科协议](mmlu-all-subjects.md)。HumanEval 使用相同结构：`benchmark="humaneval"`，`problem.choices=null`，`problem.entry_point` 为函数名，`answer={"kind":"code","value":"官方 completion"}`。LiveCodeBench v6 同样使用这组字段：`benchmark="livecodebench_v6"`；functional 题保留函数入口，并在 `problem.question` 后附上原始 `starter_code` 供 PALS 看见完整公开上下文；stdin 题的 `problem.entry_point=null` 且无 starter code。`answer.value` 是经固定 CPU 测试通过的 CALIBRI 派生参考程序，**不是官方 gold**。将来接入其他 benchmark 时须仍输出同一组字段；需要新字段时发布 v2，不在 v1 中悄悄加字段。
 
 ### 字段语义与约束
 
@@ -84,7 +84,7 @@ python scripts/export_pals_dag_unified_v1.py \
 
 现有 PALS `prepare --benchmark gpqa`、`--benchmark humaneval` 或 `--benchmark livecodebench` 会按行级 `schema_version` 识别新格式，并继续生成各自的 `cases.json`、`jobs.json`、`selection.json`、`inventory.json`。它也继续接受 GPQA/HumanEval 对应历史格式，既有实验无需重跑。预处理器校验新格式的图哈希和结构；来源文件应再用 `--expected-sha256` 固定。新格式不会把旧格式里的全部审核详情复制进去，因此独立复核模型审查仍需原冻结文件。
 
-对新的 GPQA、HumanEval 或后续 benchmark，构图器应先完成各自的来源与语义审核，再把接受的节点转换到上述固定结构，调用 `validate_row()` 验证，并为数据集发布独立的行数、排除原因与文件哈希清单。导出脚本支持已验收的 GPQA/HumanEval 历史输入及完成全链路审计后的 LiveCodeBench v6 接受子集；它不把未完成回修批次或非接受样本转换为实验输入。其他 benchmark 仍需要明确的来源适配，不能仅改 `benchmark` 字符串绕过校验。
+对新的 GPQA、HumanEval 或后续 benchmark，构图器应先完成各自的来源与语义审核，再把接受的节点转换到上述固定结构，调用 `validate_row()` 验证，并为数据集发布独立的行数、排除原因与文件哈希清单。导出脚本支持已验收的 GPQA/HumanEval 历史输入、完成全链路审计后的 LiveCodeBench v6 接受子集，以及按 `mmlu_model_candidates_v1` 冻结的 MMLU 模型接受候选；它不把未完成批次或非接受样本转换为实验输入。MMLU 失败题和 57 学科完整分母另存于 `all_outcomes.jsonl` 和各学科清单。其他 benchmark 仍需要明确的来源适配，不能仅改 `benchmark` 字符串绕过校验。
 
 ## 已做的兼容性核对
 

@@ -5,11 +5,14 @@ missing edges, change source answers, or declare model-reviewed DAGs to be human
 
 - `--benchmark gsm8k`: `openai/gsm8k`, `main`, `test`, open-answer text, no choices.
   The question alone enters the prompt; the answer node and answer value do not.
-- `--benchmark mmlu`: `cais/mmlu`, `test`, one of the five math or four
-  psychology/social subsets named in `unified.py`, four labeled choices. The
+- `--benchmark mmlu`: `cais/mmlu`, `test`, one of the 57 official subject
+  subsets named in `unified.py`, four labeled choices. The
   `answer.value` field and terminal answer node do not enter the prompt. Some
   source DAGs nevertheless mention the correct option in nonterminal steps;
   cohort review must flag this separately rather than claiming answer-blind CoT.
+  The 57-subject construction/export protocol is documented in
+  `../../docs/mmlu-all-subjects.md`; accepting all IDs in this reader does not
+  mean that their DAGs have been constructed or semantically reviewed.
 - Both require a model-accepted record, a matching source ID/row, a valid DAG
   node hash, one excluded answer node at the end, and at least two non-answer
   steps in original topological order. No semantic edge certification is implied.

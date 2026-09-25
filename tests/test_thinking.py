@@ -22,9 +22,9 @@ from dag_builder.storage import read_json, write_once
 from test_builder import OUTPUTS, QUESTION, RATIONALE, SOLUTION
 
 
-def native_config():
+def native_config(version="mmlu-thinking-v1"):
     return Config(
-        prompt_version="mmlu-thinking-v1",
+        prompt_version=version,
         thinking="enabled",
         reasoning_effort="high",
         response_format="json_object",
@@ -33,8 +33,10 @@ def native_config():
 
 
 class NativeClient:
-    def __init__(self, reasoning=RATIONALE, answer="A", structured=None):
+    def __init__(self, reasoning=RATIONALE, answer="A", structured=None,
+                 version="mmlu-thinking-v1"):
         self.reasoning, self.answer = reasoning, answer
+        self.version = version
         self.structured = deepcopy(SOLUTION if structured is None else structured)
         self.calls = []
 
@@ -43,7 +45,7 @@ class NativeClient:
         stage = next(
             s
             for s in THINKING_STAGES
-            if prompt(s, "mmlu-thinking-v1") == request["messages"][0]["content"]
+            if prompt(s, self.version) == request["messages"][0]["content"]
         )
         if stage == "solve":
             content = f"A concise fixture explanation.\nFinal answer: {self.answer}"
@@ -171,6 +173,16 @@ class ThinkingTests(unittest.TestCase):
         self.assertEqual(review_input["solution"], SOLUTION)
         runner.run()
         self.assertEqual(len(client.calls), 7)
+
+    def test_general_native_protocol_preserves_reasoning_separation(self):
+        version = "mmlu-general-thinking-v1"
+        client = NativeClient(version=version)
+        result = Pipeline(self.root, native_config(version), client).run()
+        self.assertEqual(result["results"][0]["status"], "model_accepted")
+        self.assertEqual(len(client.calls), 7)
+        dag = read_json(self.root / "items" / self.item["item_id"] / "dag.json")
+        self.assertEqual(dag["construction_protocol"], version)
+        self.assertEqual(dag["native_solution"]["reasoning_content"], RATIONALE)
 
     def test_wrong_answer_stops_before_structuring(self):
         client = NativeClient(answer="B")

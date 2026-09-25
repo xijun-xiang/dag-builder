@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .storage import digest, private_dir, write_bytes_once, write_once
 from .unified_viewer import render
+from .mmlu_catalog import MMLU_SUBJECTS
 
 
 VERSION = "pals_dag_unified_v1"
@@ -53,7 +54,7 @@ def _candidate_nodes(candidate):
 
 def convert_record(record, benchmark, source_file_sha256):
     """Convert one frozen, model-accepted record without modifying its evidence."""
-    _require(benchmark in ("gpqa_diamond", "humaneval", "livecodebench_v6"), "unsupported benchmark")
+    _require(benchmark in ("gpqa_diamond", "humaneval", "livecodebench_v6", "mmlu"), "unsupported benchmark")
     _require(_sha256(source_file_sha256), "source file SHA256 required")
     _require(isinstance(record, dict) and record.get("model_accepted") is True,
              "only model-accepted source records can be exported")
@@ -62,7 +63,30 @@ def convert_record(record, benchmark, source_file_sha256):
     _require(_text(item_id) and source.get("item_id") == item_id, "source item ID mismatch")
     source_dag = record.get("dag")
 
-    if benchmark == "gpqa_diamond":
+    if benchmark == "mmlu":
+        _require(record.get("schema_version") == "mmlu_model_candidates_v1"
+                 and record.get("status") == "model_accepted"
+                 and record.get("human_approved") is False
+                 and source.get("dataset") == "cais/mmlu"
+                 and source.get("subset") in MMLU_SUBJECTS
+                 and source.get("split") == "test"
+                 and source.get("task_type") == "mmlu", "MMLU source contract mismatch")
+        _require(isinstance(source_dag, dict) and source_dag.get("source") == source
+                 and source_dag.get("item_id") == item_id
+                 and digest(source_dag) == record.get("dag_sha256")
+                 and source_dag.get("reference_solution", {}).get("answer") == source.get("gold_answer"),
+                 "MMLU DAG/source/answer mismatch")
+        choices = source["choices"]
+        _require(isinstance(choices, list) and len(choices) == 4
+                 and all(_text(choice) for choice in choices)
+                 and source.get("gold_answer") in ("A", "B", "C", "D"),
+                 "invalid MMLU choices or answer")
+        nodes = deepcopy(source_dag["nodes"])
+        source_id = f"cais/mmlu:{source['subset']}:test:{source['row']}"
+        problem = {"question": source["question"], "domain": source["subset"],
+                   "choices": choices, "entry_point": None}
+        answer = {"kind": "choice", "value": source["gold_answer"]}
+    elif benchmark == "gpqa_diamond":
         _require(record.get("schema_version") == "gpqa_all_outcomes_v1"
                  and source.get("subset") == "gpqa_diamond", "GPQA source contract mismatch")
         _require(record.get("status") in ("model_accepted", "repaired_model_accepted",
