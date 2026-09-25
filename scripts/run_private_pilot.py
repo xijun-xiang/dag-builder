@@ -35,6 +35,9 @@ def pipeline_type(root, config):
     from dag_builder.repair_loop import RevisionPipeline
 
     if config.task_type == "livecodebench":
+        if config.prompt_version == "lcb-answer-backward-review-v1":
+            from dag_builder.lcb_answer_backward_review import LCBAnswerBackwardReview
+            return LCBAnswerBackwardReview
         if config.prompt_version in ("lcb-dag-revision-v1", "lcb-dag-revision-v2", "lcb-dag-revision-v3"):
             from dag_builder.livecodebench_dag_revision import LCBDAGRevisionPipeline
             return LCBDAGRevisionPipeline
