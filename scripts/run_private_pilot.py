@@ -35,6 +35,9 @@ def pipeline_type(root, config):
     from dag_builder.repair_loop import RevisionPipeline
 
     if config.task_type == "livecodebench":
+        if config.prompt_version == "lcb-dag-revision-v1":
+            from dag_builder.livecodebench_dag_revision import LCBDAGRevisionPipeline
+            return LCBDAGRevisionPipeline
         if (root / "calibri-review-resume-manifest.json").exists():
             from dag_builder.calibri_review_resume import CALIBRIReviewResume
             return CALIBRIReviewResume

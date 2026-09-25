@@ -56,7 +56,7 @@ class Config:
             or not 0 <= self.rate_limit_retries <= 2
         ):
             raise ValueError("rate_limit_retries must be 0..2")
-        worker_limit = 32 if self.task_type in ("gpqa", "humaneval") else 6
+        worker_limit = 32 if self.task_type in ("gpqa", "humaneval", "livecodebench") else 6
         if self.workers > worker_limit:
             raise ValueError(
                 f"at most {worker_limit} workers are supported for this task"
@@ -68,7 +68,7 @@ class Config:
             "gsm8k": ("gsm8k-v1",),
             "gpqa": ("gpqa-reference-v1", "gpqa-repair-v1", "gpqa-revision-v1"),
             "humaneval": ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"),
-            "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1", "livecodebench-editorial-pilot-v1", "calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "calibri-lcb-repair-v1", "calibri-lcb-repair-v2", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4"),
+            "livecodebench": ("livecodebench-reference-v1", "livecodebench-dag-v1", "livecodebench-editorial-pilot-v1", "calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "calibri-lcb-repair-v1", "calibri-lcb-repair-v2", "t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4", "lcb-dag-revision-v1"),
         }[self.task_type]
         if self.prompt_version not in versions:
             raise ValueError("prompt version does not match task_type")
@@ -100,9 +100,15 @@ class Config:
             "editorial_grounded_pilot",
             "calibri_reference_normalization",
             "t2ance_reference_normalization",
+            "reference_dag_revision",
         ):
             raise ValueError("unknown solution source")
-        if self.prompt_version in ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4"):
+        if self.prompt_version == "lcb-dag-revision-v1":
+            if self.solution_source != "reference_dag_revision":
+                raise ValueError("DAG revision requires its dedicated source label")
+        elif self.solution_source == "reference_dag_revision":
+            raise ValueError("DAG revision source requires its dedicated protocol")
+        elif self.prompt_version in ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2", "t2ance-lcb-normalize-v3", "t2ance-lcb-normalize-v4"):
             if self.solution_source != "t2ance_reference_normalization":
                 raise ValueError("t2ance requires explicit source-bound normalization")
         elif self.solution_source == "t2ance_reference_normalization":
