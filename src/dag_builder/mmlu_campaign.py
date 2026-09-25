@@ -9,7 +9,7 @@ from .storage import private_dir, read_json, run_lock, write_once
 
 
 def prepare_all(root, revision, split="test", count_per_subject=None,
-                seed=20260909, source_dir=None):
+                seed=20260909, source_dir=None, selected_subjects=None):
     """Freeze each subject independently; never select by model outcome."""
     root = private_dir(root)
     if count_per_subject is not None and (type(count_per_subject) is not int or count_per_subject <= 0):
@@ -17,16 +17,23 @@ def prepare_all(root, revision, split="test", count_per_subject=None,
     source_dir = Path(source_dir).resolve() if source_dir is not None else None
     if source_dir is not None and not source_dir.is_dir():
         raise ValueError("source_dir must exist")
+    selected_subjects = (tuple(MMLU_SUBJECTS) if selected_subjects is None
+                         else tuple(selected_subjects))
+    if (not selected_subjects or len(set(selected_subjects)) != len(selected_subjects)
+            or any(subject not in MMLU_SUBJECTS for subject in selected_subjects)):
+        raise ValueError("selected_subjects must be unique recognized MMLU subjects")
     subjects = {}
-    for subset in MMLU_SUBJECTS:
+    for subset in selected_subjects:
         local_source = (source_dir / subset / f"{split}-00000-of-00001.parquet"
                         if source_dir is not None else None)
         subjects[subset] = prepare(root / "subjects" / subset, revision, subset,
                                    split, count_per_subject, seed, "mmlu", local_source)
-    manifest = {"protocol": "mmlu-57-source-selection-v1", "dataset": "cais/mmlu",
+    protocol = ("mmlu-57-source-selection-v1" if set(selected_subjects) == set(MMLU_SUBJECTS)
+                else "mmlu-subject-source-selection-v1")
+    manifest = {"protocol": protocol, "dataset": "cais/mmlu",
                 "revision": revision, "split": split, "seed": seed,
                 "count_per_subject": count_per_subject,
-                "subject_count": len(MMLU_SUBJECTS),
+                "subject_count": len(selected_subjects),
                 "candidate_count": sum(row["candidate_count"] for row in subjects.values()),
                 "eligible_count": sum(row["eligible_count"] for row in subjects.values()),
                 "selected_count": sum(row["selected_count"] for row in subjects.values()),
@@ -52,13 +59,18 @@ def _run_all_locked(root, config, client, subjects, max_total_calls,
 
     root = Path(root)
     manifest = read_json(root / "campaign_manifest.json")
-    if (manifest.get("protocol") != "mmlu-57-source-selection-v1"
-            or set(manifest.get("subjects", {})) != set(MMLU_SUBJECTS)
+    campaign_subjects = tuple(manifest.get("subjects", {}))
+    expected_protocol = ("mmlu-57-source-selection-v1"
+                         if set(campaign_subjects) == set(MMLU_SUBJECTS)
+                         else "mmlu-subject-source-selection-v1")
+    if (not campaign_subjects or any(subject not in MMLU_SUBJECTS for subject in campaign_subjects)
+            or manifest.get("protocol") != expected_protocol
+            or manifest.get("subject_count") != len(campaign_subjects)
             or config.task_type != "mmlu"
             or config.prompt_version != "mmlu-general-thinking-v1"):
         raise ValueError("MMLU campaign/config mismatch")
     if (not subjects or len(set(subjects)) != len(subjects)
-            or any(subject not in MMLU_SUBJECTS for subject in subjects)):
+            or any(subject not in campaign_subjects for subject in subjects)):
         raise ValueError("subjects must be a nonempty, unique MMLU subject list")
     if (type(max_total_calls) is not int or max_total_calls <= 0
             or type(max_total_reserved_tokens) is not int
@@ -75,7 +87,7 @@ def _run_all_locked(root, config, client, subjects, max_total_calls,
     # subjects not requested in this invocation. A later call cannot reset the
     # campaign-wide ceiling by selecting a different slice.
     history = {}
-    for subject in MMLU_SUBJECTS:
+    for subject in campaign_subjects:
         paths = tuple((root / "subjects" / subject).glob("items/*/*/attempt-*/request.json"))
         reservations = [read_json(path).get("reserved_tokens") for path in paths]
         if any(type(value) is not int or value <= 0 for value in reservations):

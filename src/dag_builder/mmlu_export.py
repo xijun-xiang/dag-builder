@@ -134,23 +134,27 @@ def export_subject(root, output_dir):
 
 
 def export_campaign(campaign_root, output_dir):
-    """Require all 57 terminal cohorts, then combine without hiding failures."""
+    """Require every selected subject to be terminal; retain all failures."""
     campaign_root, output_dir = Path(campaign_root), Path(output_dir)
     if output_dir.exists():
         raise ValueError("refusing to overwrite an existing campaign export")
     campaign = read_json(campaign_root / "campaign_manifest.json")
-    if (campaign.get("protocol") != "mmlu-57-source-selection-v1"
-            or set(campaign.get("subjects", {})) != set(MMLU_SUBJECTS)):
+    subjects = tuple(campaign.get("subjects", {}))
+    expected_protocol = ("mmlu-57-source-selection-v1" if set(subjects) == set(MMLU_SUBJECTS)
+                         else "mmlu-subject-source-selection-v1")
+    if (not subjects or any(subject not in MMLU_SUBJECTS for subject in subjects)
+            or campaign.get("protocol") != expected_protocol
+            or campaign.get("subject_count") != len(subjects)):
         raise ValueError("incomplete MMLU source campaign")
     if campaign.get("split") != "test":
         raise ValueError("only the frozen test split is exportable for PALS")
     # Preflight all terminal states before creating any output directory.
-    first_root = campaign_root / "subjects" / MMLU_SUBJECTS[0]
+    first_root = campaign_root / "subjects" / subjects[0]
     expected_run_config = read_json(first_root / "run_config.json")
     expected_code_sha = read_json(
         first_root / "implementation.json"
     ).get("code_sha256")
-    for subset in MMLU_SUBJECTS:
+    for subset in subjects:
         source_root = campaign_root / "subjects" / subset
         if read_json(source_root / "selection.json") != campaign["subjects"][subset]:
             raise ValueError("campaign and subject selections differ")
@@ -174,7 +178,7 @@ def export_campaign(campaign_root, output_dir):
             raise ValueError("mixed MMLU construction protocol or code revision")
     private_dir(output_dir)
     accepted_bytes, eligible_bytes, outcome_bytes, subject_manifests = [], [], [], {}
-    for subset in MMLU_SUBJECTS:
+    for subset in subjects:
         source_root = campaign_root / "subjects" / subset
         subject_export = output_dir / "subjects" / subset
         subject_manifests[subset] = export_subject(source_root, subject_export)
@@ -189,9 +193,11 @@ def export_campaign(campaign_root, output_dir):
     unified = (convert_file(output_dir / "pals_eligible_candidates.jsonl", "mmlu",
                             hashlib.sha256(eligible).hexdigest(), output_dir / "unified")
                if eligible else None)
-    manifest = {"schema_version": "mmlu-57-model-campaign-export-v1",
+    schema = ("mmlu-57-model-campaign-export-v1" if len(subjects) == len(MMLU_SUBJECTS)
+              else "mmlu-subject-model-campaign-export-v1")
+    manifest = {"schema_version": schema,
                 "source_revision": campaign["revision"], "split": campaign["split"],
-                "subject_count": len(MMLU_SUBJECTS),
+                "subject_count": len(subjects),
                 "candidate_count": sum(row["candidate_count"] for row in subject_manifests.values()),
                 "eligible_count": sum(row["eligible_count"] for row in subject_manifests.values()),
                 "source_excluded": sum(row["source_excluded"] for row in subject_manifests.values()),

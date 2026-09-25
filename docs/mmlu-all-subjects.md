@@ -35,6 +35,17 @@ dag-builder run-mmlu-all --root /private/project/mmlu-57-pilot \
 要求总预算至少覆盖所选学科的本地最坏情形上限，逐学科顺序运行，
 任一学科暂停就停下。`--limit-per-subject` 是固定抽样序列的前缀，
 不是遇到失败后补取后续题。已完成阶段依靠原有不可变结果续跑。
+
+只做指定学科时，`prepare-mmlu-all` 可传同样的 `--subjects` 逗号列表。
+这会生成独立的部分学科 campaign，仅下载/选择名单内学科；
+`run-mmlu-all` 不允许运行名单外学科，`export-mmlu-all` 要求名单内
+全部达到终态后才合并。省略 `--subjects` 仍保持原有 57 学科协议。
+每个 campaign 的完整名单固定在 `campaign_manifest.json`，不允许
+靠后续换名单重置总预算。
+
+工程回归配置 `configs/mmlu-general-thinking-canary13.json` 每学科最多
+7 次请求、50 万保守预留 token，仅适用于每学科 1 题的七阶段回归。
+它不是全量构图配置；全量前必须根据实际题数重新冻结成本上限。
 先导和正式全量应使用不同根目录；若先导后改变提示词或规则，
 必须另开协议版本，不把两版混合为同一确认性批次。
 

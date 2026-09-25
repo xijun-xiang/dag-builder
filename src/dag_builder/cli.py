@@ -106,7 +106,7 @@ def main():
     source_count.add_argument("--all-eligible", action="store_true",
                               help="Select every mechanically eligible item")
     source.add_argument("--seed", type=int, default=20260909)
-    mmlu_all = commands.add_parser("prepare-mmlu-all", help="Prepare all 57 pinned MMLU subjects, no API calls")
+    mmlu_all = commands.add_parser("prepare-mmlu-all", help="Prepare pinned MMLU subjects, no API calls")
     mmlu_all.add_argument("--root", required=True, type=Path)
     mmlu_all.add_argument("--revision", required=True)
     mmlu_all.add_argument("--split", default="test", choices=("dev", "validation", "test"))
@@ -115,6 +115,7 @@ def main():
     mmlu_all.add_argument("--seed", type=int, default=20260909)
     mmlu_all.add_argument("--source-dir", type=Path,
                           help="Optional local Parquet tree: SUBJECT/SPLIT-00000-of-00001.parquet")
+    mmlu_all.add_argument("--subjects", help="Comma-separated official subject IDs; omit for all 57")
     mmlu_run = commands.add_parser("run-mmlu-all", help="Explicitly budgeted sequential MMLU campaign")
     mmlu_run.add_argument("--root", required=True, type=Path)
     mmlu_run.add_argument("--config", required=True, type=Path)
@@ -129,7 +130,7 @@ def main():
     mmlu_export = commands.add_parser("export-mmlu-subject", help="Offline all-outcome and unified PALS export")
     mmlu_export.add_argument("--root", required=True, type=Path)
     mmlu_export.add_argument("--output-dir", required=True, type=Path)
-    mmlu_export_all = commands.add_parser("export-mmlu-all", help="Require all 57 completed subjects, then combine PALS exports")
+    mmlu_export_all = commands.add_parser("export-mmlu-all", help="Require all selected subjects completed, then combine PALS exports")
     mmlu_export_all.add_argument("--campaign-root", required=True, type=Path)
     mmlu_export_all.add_argument("--output-dir", required=True, type=Path)
     for name in ("probe", "probe-contract", "run", "repair", "recover-humaneval"):
@@ -228,9 +229,13 @@ def main():
         elif args.command == "prepare-mmlu-all":
             if args.root.exists() and not args.root.is_dir():
                 raise ValueError("campaign root must be a directory")
+            subjects = args.subjects.split(",") if args.subjects else None
+            if subjects is not None and any(subject != subject.strip() for subject in subjects):
+                raise ValueError("subject IDs must not contain whitespace")
             with run_lock(args.root):
                 result = prepare_all_mmlu(args.root, args.revision, args.split,
-                                          args.count_per_subject, args.seed, args.source_dir)
+                                          args.count_per_subject, args.seed, args.source_dir,
+                                          subjects)
         elif args.command == "run-mmlu-all":
             config = Config.load(args.config)
             subjects = list(MMLU_SUBJECTS) if args.all_subjects else args.subjects.split(",")

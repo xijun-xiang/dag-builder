@@ -71,6 +71,24 @@ class MMLUAllTests(unittest.TestCase):
             self.assertEqual(prepared.call_count, 57)
             self.assertEqual({call.args[2] for call in prepared.call_args_list}, set(MMLU_SUBJECTS))
 
+    def test_partial_campaign_prepares_only_requested_subjects(self):
+        with tempfile.TemporaryDirectory() as temp, patch(
+                "dag_builder.mmlu_campaign.prepare") as prepared:
+            prepared.side_effect = lambda root, revision, subset, split, count, seed, dataset, source: {
+                "candidate_count": 2, "eligible_count": 2,
+                "selected_count": count, "selected_ids": [subset], "excluded": []}
+            result = prepare_all(Path(temp).resolve() / "campaign", "a" * 40,
+                                 count_per_subject=1,
+                                 selected_subjects=("econometrics", "formal_logic"))
+            self.assertEqual(result["protocol"], "mmlu-subject-source-selection-v1")
+            self.assertEqual(result["subject_count"], 2)
+            self.assertEqual(list(result["subjects"]), ["econometrics", "formal_logic"])
+            self.assertEqual(prepared.call_count, 2)
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "unique recognized"):
+                prepare_all(Path(temp).resolve() / "campaign", "a" * 40,
+                            selected_subjects=("econometrics", "econometrics"))
+
     def test_offline_parquet_campaign_prepares_all_57_without_network(self):
         try:
             import pyarrow as pa
@@ -94,6 +112,45 @@ class MMLUAllTests(unittest.TestCase):
             self.assertEqual(result["selected_count"], 57)
             self.assertEqual(len({read_json(base / "campaign" / "subjects" / subject / "items.json")[0]["item_id"]
                                   for subject in MMLU_SUBJECTS}), 57)
+
+    def test_partial_campaign_export_requires_only_its_frozen_subjects(self):
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except ImportError:
+            self.skipTest("optional source dependency pyarrow unavailable")
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp).resolve()
+            subjects = ("econometrics", "formal_logic")
+            for subject in subjects:
+                directory = base / "sources" / subject
+                directory.mkdir(parents=True)
+                pq.write_table(pa.Table.from_pylist([{
+                    "question": f"Which option is correct in {subject}?",
+                    "choices": ["first", "second", "third", "fourth"],
+                    "answer": 0, "subject": subject,
+                }]), directory / "test-00000-of-00001.parquet")
+            campaign = base / "campaign"
+            prepare_all(campaign, "a" * 40, count_per_subject=1,
+                        source_dir=base / "sources", selected_subjects=subjects)
+            for subject in subjects:
+                root = campaign / "subjects" / subject
+                item = read_json(root / "items.json")[0]
+                write_once(root / "run_config.json", {
+                    "task_type": "mmlu", "prompt_version": "mmlu-general-thinking-v1",
+                    "model": "fixture-model"})
+                write_once(root / "implementation.json", {"code_sha256": "a" * 64})
+                write_once(root / "inputs_manifest.json", {
+                    "items_sha256": digest([item]),
+                    "selection_sha256": digest(read_json(root / "selection.json"))})
+                write_once(root / "items" / item["item_id"] / "result.json", {
+                    "item_id": item["item_id"], "status": "rejected", "stage": "solve",
+                    "reason": "fixture_answer_mismatch"})
+            result = export_campaign(campaign, base / "export")
+            self.assertEqual(result["schema_version"], "mmlu-subject-model-campaign-export-v1")
+            self.assertEqual(result["subject_count"], 2)
+            self.assertEqual(result["candidate_count"], 2)
+            self.assertEqual(result["model_accepted"], 0)
 
     def test_full_export_retains_57_rejections_without_fabricating_eligible_graphs(self):
         try:
@@ -141,6 +198,7 @@ class MMLUAllTests(unittest.TestCase):
             root.mkdir(mode=0o700)
             write_once(root / "campaign_manifest.json", {
                 "protocol": "mmlu-57-source-selection-v1",
+                "subject_count": len(MMLU_SUBJECTS),
                 "subjects": {subject: {"selected_ids": [subject]}
                              for subject in MMLU_SUBJECTS}})
             for subject in ("econometrics", "formal_logic"):
