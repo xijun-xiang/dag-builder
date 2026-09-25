@@ -28,7 +28,7 @@ REFERENCE_STAGES = STAGES[1:]
 REPAIR_STAGES = ("repair", "justify", "review_repair")
 REVISION_STAGES = ("revise", "audit", "adjudicate")
 MMLU_NATIVE_VERSIONS = (
-    "mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1",
+    "mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1", "mmlu-general-thinking-v2",
 )
 V2_STAGE_TOKEN_CAPS = {
     "structure_solution": 2048,
@@ -128,6 +128,7 @@ def prompt(
     fallback_versions = {
         "mmlu-thinking-v1": ("v1",),
         "mmlu-thinking-v2": ("mmlu-thinking-v1", "v1"),
+        "mmlu-general-thinking-v2": ("mmlu-general-thinking-v1",),
         "gsm8k-v2": ("gsm8k-v1",),
     }.get(version, ())
     for fallback in fallback_versions:

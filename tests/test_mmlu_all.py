@@ -37,6 +37,19 @@ class MMLUAllTests(unittest.TestCase):
         self.assertNotIn("temperature", request)
         self.assertNotIn("reference_answer", request["messages"][1]["content"])
 
+    def test_v2_only_changes_atomization_and_retains_native_contract(self):
+        old = Config(prompt_version="mmlu-general-thinking-v1", thinking="enabled")
+        new = Config(prompt_version="mmlu-general-thinking-v2", thinking="enabled")
+        self.assertEqual(stages_for(new), THINKING_STAGES)
+        for stage in THINKING_STAGES:
+            if stage == "atomize":
+                self.assertNotEqual(prompt(stage, old.prompt_version),
+                                    prompt(stage, new.prompt_version))
+                self.assertIn("Omit generic restatements", prompt(stage, new.prompt_version))
+            else:
+                self.assertEqual(prompt(stage, old.prompt_version),
+                                 prompt(stage, new.prompt_version))
+
     def test_standalone_pals_reader_has_the_same_subject_set(self):
         location = Path(__file__).resolve().parents[1] / "pals-validation" / "src"
         sys.path.insert(0, str(location))

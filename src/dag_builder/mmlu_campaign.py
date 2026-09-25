@@ -67,7 +67,7 @@ def _run_all_locked(root, config, client, subjects, max_total_calls,
             or manifest.get("protocol") != expected_protocol
             or manifest.get("subject_count") != len(campaign_subjects)
             or config.task_type != "mmlu"
-            or config.prompt_version != "mmlu-general-thinking-v1"):
+            or config.prompt_version not in ("mmlu-general-thinking-v1", "mmlu-general-thinking-v2")):
         raise ValueError("MMLU campaign/config mismatch")
     if (not subjects or len(set(subjects)) != len(subjects)
             or any(subject not in campaign_subjects for subject in subjects)):

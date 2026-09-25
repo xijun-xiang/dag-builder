@@ -172,7 +172,7 @@ def export_campaign(campaign_root, output_dir):
         run_config = read_json(source_root / "run_config.json")
         implementation = read_json(source_root / "implementation.json")
         if (run_config != expected_run_config
-                or run_config.get("prompt_version") != "mmlu-general-thinking-v1"
+                or run_config.get("prompt_version") not in ("mmlu-general-thinking-v1", "mmlu-general-thinking-v2")
                 or not isinstance(expected_code_sha, str)
                 or implementation.get("code_sha256") != expected_code_sha):
             raise ValueError("mixed MMLU construction protocol or code revision")
