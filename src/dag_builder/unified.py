@@ -107,7 +107,10 @@ def convert_record(record, benchmark, source_file_sha256):
                      and source_status in ("calibri_derived_tested_reference",
                                            "t2ance_derived_tested_reference"))
                  or (schema_version == "lcb-v6-t2ance-v4-candidates-v1"
-                     and source_status == "t2ance_derived_tested_reference"),
+                     and source_status == "t2ance_derived_tested_reference")
+                 or (schema_version == "lcb-v6-dag-revision-candidates-v1"
+                     and source_status in ("calibri_derived_tested_reference",
+                                           "t2ance_derived_tested_reference")),
                  "LCB source protocol mismatch")
         _require(record.get("status", "model_accepted") == "model_accepted"
                  and record.get("human_approved") is False
@@ -116,15 +119,26 @@ def convert_record(record, benchmark, source_file_sha256):
                  and source.get("task_type") == "livecodebench", "LCB source contract mismatch")
         if source_status == "t2ance_derived_tested_reference":
             protocol = source_dag.get("construction_protocol") if isinstance(source_dag, dict) else None
-            allowed = (("t2ance-lcb-normalize-v4",) if schema_version ==
-                       "lcb-v6-t2ance-v4-candidates-v1" else
-                       ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2",
-                        "t2ance-lcb-normalize-v3"))
+            if schema_version == "lcb-v6-dag-revision-candidates-v1":
+                allowed = ("lcb-dag-revision-v3",)
+                normalized_protocol = "t2ance-lcb-normalize-v4"
+            elif schema_version == "lcb-v6-t2ance-v4-candidates-v1":
+                allowed = ("t2ance-lcb-normalize-v4",)
+                normalized_protocol = protocol
+            else:
+                allowed = ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2",
+                           "t2ance-lcb-normalize-v3")
+                normalized_protocol = protocol
             _require(isinstance(source_dag, dict)
                      and source.get("reference_origin") == "t2ance_model_output"
                      and protocol in allowed
-                     and source_dag.get("normalization", {}).get("protocol") == protocol,
+                     and source_dag.get("normalization", {}).get("protocol") == normalized_protocol,
                      "t2ance protocol/source mismatch")
+        elif schema_version == "lcb-v6-dag-revision-candidates-v1":
+            _require(isinstance(source_dag, dict)
+                     and source_dag.get("construction_protocol") == "lcb-dag-revision-v3"
+                     and source.get("reference_origin") == "calibri_model_output",
+                     "CALIBRI revision protocol/source mismatch")
         _require(isinstance(source_dag, dict) and source_dag.get("source") == source
                  and source_dag.get("item_id") == item_id
                  and source_dag.get("formal_eligible") is False

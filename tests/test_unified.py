@@ -161,6 +161,31 @@ class UnifiedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "t2ance protocol"):
             convert_record(wrong, "livecodebench_v6", SOURCE_HASH)
 
+    def test_revision_candidate_keeps_source_tier_and_normalization_protocol(self):
+        for tier, origin, normalization in (
+            ("calibri_derived_tested_reference", "calibri_model_output",
+             "calibri-lcb-normalize-v1"),
+            ("t2ance_derived_tested_reference", "t2ance_model_output",
+             "t2ance-lcb-normalize-v4"),
+        ):
+            source = livecodebench()
+            source["schema_version"] = "lcb-v6-dag-revision-candidates-v1"
+            source["source_status"] = tier
+            source["source"]["reference_origin"] = origin
+            source["dag"]["source"] = source["source"]
+            source["dag"]["construction_protocol"] = "lcb-dag-revision-v3"
+            source["dag"]["normalization"] = {"protocol": normalization}
+            source["dag_sha256"] = digest(source["dag"])
+            row = convert_record(source, "livecodebench_v6", SOURCE_HASH)
+            self.assertEqual(row["review"]["construction_protocol"],
+                             "lcb-dag-revision-v3")
+            wrong = deepcopy(source)
+            wrong["dag"]["normalization"]["protocol"] = "t2ance-lcb-normalize-v1"
+            wrong["dag_sha256"] = digest(wrong["dag"])
+            if origin == "t2ance_model_output":
+                with self.assertRaisesRegex(ValueError, "t2ance protocol"):
+                    convert_record(wrong, "livecodebench_v6", SOURCE_HASH)
+
     def test_livecodebench_rejects_unpassed_or_tampered_source(self):
         source = livecodebench()
         source["source"]["execution_evidence"]["status"] = "failed"
