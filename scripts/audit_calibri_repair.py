@@ -13,6 +13,7 @@ from dag_builder.calibri_normalize import assemble_graph, public_input
 from dag_builder.calibri_repair import (
     apply_versioned_repair, assemble_repaired_graph, dependency_data, validate_repair_audit, verify_repair,
 )
+from dag_builder.calibri_repair_transport import replay_terminal_item
 from dag_builder.config import Config
 from dag_builder.response_contract import check_response
 from dag_builder.schemas import parse_object, require
@@ -24,6 +25,8 @@ def audit(root):
     config = Config.load(root / "run_config.json")
     items = verify_repair(root, config)
     require(read_json(root / "completion.json")["status"] == "processed", "run has not completed")
+    continuation = read_json(root / "calibri-repair-manifest.json").get(
+        "partial_transport_continuation")
     code = read_json(root / "code_origin.json")
     for name, expected in code["source_files"].items():
         require(sha256((root / "controller/code/dag_builder" / name).read_bytes()).hexdigest() == expected,
@@ -34,6 +37,11 @@ def audit(root):
         directory = root / "items" / item["item_id"]
         seed = read_json(root / "repair-seeds" / (item["item_id"] + ".json"))
         result = read_json(directory / "result.json")
+        if continuation is not None:
+            # A stored result/validation label is not evidence. Reconstruct all
+            # 24 continued terminal statuses, stages, reasons and accepted DAGs
+            # from the exact returned message.content, including rejections.
+            replay_terminal_item(root, item, config)
         row = {"item_id": item["item_id"], "question_id": item["question_id"],
                "io_type": item["io_type"], "status": result["status"], "stage": result["stage"],
                "reason": result["reason"], "additions": None, "removals": None}
@@ -101,7 +109,7 @@ def audit(root):
         rows.append(row)
     require(calls <= config.max_calls and reserved <= config.max_reserved_tokens, "allocation exceeded")
     proof = read_json(root / "calibri-normalization-manifest.json")
-    return {"protocol": "calibri-repair-offline-audit-v1", "mechanical_pass": True,
+    report = {"protocol": "calibri-repair-offline-audit-v1", "mechanical_pass": True,
             "semantic_certification": False, "git_commit": code["git_commit"],
             "statuses": dict(Counter(r["status"] for r in rows)), "rows": rows,
             "requests": calls, "reserved_tokens": reserved, "reported_tokens": reported,
@@ -109,6 +117,27 @@ def audit(root):
             "cumulative_reserved_tokens": proof["prior_reserved_tokens"] + reserved,
             "completion_sha256": digest(read_json(root / "completion.json")),
             "note": "Mechanical replay only; manual semantic case review and release audit still required."}
+    if continuation is not None:
+        source = root / "source-run-evidence"
+        source_items = {item["item_id"]: item for item in read_json(source / "items.json")}
+        terminal = []
+        for item_id in continuation["terminal_ids"]:
+            terminal.append(replay_terminal_item(source, source_items[item_id],
+                                                Config.load(source / "run_config.json")))
+        report["transport_continuation"] = {
+            "protocol": continuation["protocol"],
+            "historical_terminal_rows": terminal,
+            "historical_terminal_count": len(terminal),
+            "historical_terminal_replayed_count": len(terminal),
+            "continued_count": len(rows),
+            "continued_terminal_replayed_count": len(rows),
+            "combined_statuses": dict(Counter(
+                r["status"] for r in terminal + rows)),
+            "source_calls_charged": continuation["source_calls"],
+            "source_accounted_tokens_charged": continuation["source_accounted_tokens"],
+            "new_requests": report["cumulative_requests"] - continuation["source_calls"],
+        }
+    return report
 
 
 def main():

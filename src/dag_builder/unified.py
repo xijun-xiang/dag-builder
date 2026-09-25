@@ -102,7 +102,8 @@ def convert_record(record, benchmark, source_file_sha256):
         schema_version = record.get("schema_version")
         _require((schema_version == "calibri-lcb-v6-model-candidates-v1"
                   and source_status == "calibri_derived_tested_reference")
-                 or (schema_version == "lcb-v6-source-stratified-candidates-v1"
+                 or (schema_version in ("lcb-v6-source-stratified-candidates-v1",
+                                        "lcb-v6-source-stratified-candidates-split-repair-v1")
                      and source_status in ("calibri_derived_tested_reference",
                                            "t2ance_derived_tested_reference")),
                  "LCB source protocol mismatch")

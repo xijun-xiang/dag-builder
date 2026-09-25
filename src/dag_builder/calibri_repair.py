@@ -416,6 +416,9 @@ def prepare_repair(parent, root, *, max_calls=9, max_reserved_tokens=1200000,
 
 def verify_repair(root, config):
     manifest = read_json(root / "calibri-repair-manifest.json")
+    if "partial_transport_continuation" in manifest:
+        from .calibri_repair_transport import verify_partial_transport
+        return verify_partial_transport(root, config)
     recovery = manifest.get("transport_recovery")
     limit = recovery["campaign_token_limit"] if recovery is not None else CAMPAIGN_TOKEN_LIMIT
     items = verify_prepared(root, config, campaign_token_limit=limit)
@@ -527,6 +530,9 @@ class CALIBRIRepairPipeline(Pipeline):
                     dag["recovery_provenance"]["development_iteration"] = 2
                 if "transport_recovery" in manifest:
                     dag["recovery_provenance"]["transport_recovery_protocol"] = DNS_RECOVERY_PROTOCOL
+                if "partial_transport_continuation" in manifest:
+                    dag["recovery_provenance"]["partial_transport_continuation_protocol"] = (
+                        manifest["partial_transport_continuation"]["protocol"])
             write_once(directory / "dag.json", dag)
             return self._finish(item, "model_accepted", stage, "pending release audit", digest(dag))
         except InvalidOutput as error:
