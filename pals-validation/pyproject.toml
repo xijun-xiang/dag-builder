@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pals-validation"
-version = "0.1.0"
-description = "Frozen GPQA-Diamond PALS E1/E2 validation protocols"
+version = "0.1.2"
+description = "Frozen GPQA-Diamond, HumanEval and LiveCodeBench PALS E1/E2 validation protocols"
 requires-python = ">=3.10"
 dependencies = []
 

@@ -1,0 +1,20 @@
+{
+  "base_url": "https://proxy.infix-ai.xyz/v1/",
+  "model": "deepseek-v4-flash",
+  "key_env": "JUDGE_API_KEY",
+  "task_type": "humaneval",
+  "solution_source": "reference_code_explanation",
+  "prompt_version": "humaneval-reference-v4",
+  "thinking": "enabled",
+  "reasoning_effort": "high",
+  "response_format": "json_object",
+  "max_tokens": 32768,
+  "timeout_seconds": 900,
+  "workers": 32,
+  "max_calls": 3200,
+  "max_reserved_tokens": 200000000,
+  "rate_limit_retries": 0,
+  "transport": "curl",
+  "strict_response_contract": true,
+  "content_gated_response": true
+}

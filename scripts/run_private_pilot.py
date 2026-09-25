@@ -8,9 +8,64 @@ and transient retry policy; semantic/integrity failures are preserved, not repai
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
+
+
+def network_preflight(base_url):
+    """Check reachability from the same execution context before any API call."""
+    parsed = urlparse(base_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("network preflight requires an HTTPS API host")
+    try:
+        with socket.create_connection((parsed.hostname, parsed.port or 443), timeout=5):
+            pass
+    except OSError:
+        raise RuntimeError("network preflight failed; no model request sent") from None
+
+
+def pipeline_type(root, config):
+    """Select the explicit protocol; a prepared recovery must never run fresh."""
+    from dag_builder.humaneval_repair import recovery_pipeline_type
+    from dag_builder.pipeline import Pipeline
+    from dag_builder.repair import RepairPipeline
+    from dag_builder.repair_loop import RevisionPipeline
+
+    if config.task_type == "livecodebench":
+        if (root / "calibri-review-resume-manifest.json").exists():
+            from dag_builder.calibri_review_resume import CALIBRIReviewResume
+            return CALIBRIReviewResume
+        if config.prompt_version in ("calibri-lcb-repair-v1", "calibri-lcb-repair-v2"):
+            from dag_builder.calibri_repair import CALIBRIRepairPipeline
+            return CALIBRIRepairPipeline
+        if config.prompt_version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3"):
+            from dag_builder.calibri_pipeline import CALIBRIPipeline
+            return CALIBRIPipeline
+        if config.prompt_version == "t2ance-lcb-normalize-v1":
+            from dag_builder.t2ance_pipeline import T2ancePipeline
+            return T2ancePipeline
+        if config.prompt_version == "livecodebench-editorial-pilot-v1":
+            from dag_builder.livecodebench_editorial import EditorialPilot
+            return EditorialPilot
+        from dag_builder.livecodebench_reference import LiveCodeBenchReferencePipeline
+        from dag_builder.livecodebench_dag import LiveCodeBenchDAGPipeline
+        if (root / "recovery_manifest.json").exists():
+            raise ValueError("LiveCodeBench cannot consume a HumanEval recovery manifest")
+        return LiveCodeBenchDAGPipeline if config.prompt_version == "livecodebench-dag-v1" else LiveCodeBenchReferencePipeline
+    if (root / "recovery_manifest.json").exists():
+        if config.task_type != "humaneval" or config.prompt_version not in (
+            "humaneval-reference-v4", "humaneval-reference-v5"
+        ):
+            raise ValueError("recovery manifest requires HumanEval v4 protocol or v5 protocol")
+        return recovery_pipeline_type(root)
+    if config.prompt_version == "gpqa-revision-v1":
+        return RevisionPipeline
+    if config.prompt_version == "gpqa-repair-v1":
+        return RepairPipeline
+    return Pipeline
 
 
 def main():
@@ -19,6 +74,7 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--key-file", type=Path, required=True)
+    parser.add_argument("--network-preflight", action="store_true")
     parser.add_argument("--worker", action="store_true")
     args = parser.parse_args()
     root = args.root.absolute()
@@ -27,9 +83,7 @@ def main():
 
     from dag_builder.client import APIClient, load_key
     from dag_builder.config import Config
-    from dag_builder.pipeline import Pipeline, implementation, now
-    from dag_builder.repair import RepairPipeline
-    from dag_builder.repair_loop import RevisionPipeline
+    from dag_builder.pipeline import implementation, now
     from dag_builder.report import overview, render
     from dag_builder.storage import (
         digest,
@@ -50,6 +104,9 @@ def main():
                     "pilot already launched; inspect before explicitly resuming"
                 )
             config = Config.load(args.config)
+            pipeline_type(root, config)
+            if args.network_preflight:
+                network_preflight(config.base_url)
             load_key(config.key_env, args.key_file)
             items = read_json(root / "items.json")
             assert items and all(
@@ -80,6 +137,8 @@ def main():
                 "--key-file",
                 str(args.key_file.absolute()),
             ]
+            if args.network_preflight:
+                command.append("--network-preflight")
             with (
                 (root / "worker.stdout.log").open("x") as out,
                 (root / "worker.stderr.log").open("x") as err,
@@ -124,6 +183,8 @@ def main():
                 root / "worker-start.json", {"pid": os.getpid(), "started_at": now()}
             )
             config = Config.load(args.config)
+            if args.network_preflight:
+                network_preflight(config.base_url)
             client = APIClient(config, load_key(config.key_env, args.key_file))
 
             def progress(row):
@@ -137,13 +198,7 @@ def main():
                 }
                 write_once(root / "progress" / (digest(snapshot) + ".json"), snapshot)
 
-            pipeline_class = (
-                RevisionPipeline
-                if config.prompt_version == "gpqa-revision-v1"
-                else RepairPipeline
-                if config.prompt_version == "gpqa-repair-v1"
-                else Pipeline
-            )
+            pipeline_class = pipeline_type(root, config)
             result = pipeline_class(root, config, client, resilient=True).run(
                 progress=progress
             )

@@ -111,7 +111,7 @@ class DagV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(
             InvalidOutput, "transitively redundant direct dependency"
         ):
-            validate_parents(redundant, nodes)
+            validate_parents(redundant, nodes, reject_transitive=True)
 
         minimal = {
             "parents": [

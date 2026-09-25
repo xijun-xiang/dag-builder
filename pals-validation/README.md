@@ -1,6 +1,12 @@
-# PALS：GPQA-Diamond E1 / E2
+# PALS：GPQA-Diamond / HumanEval / LiveCodeBench v6 / GSM8K / MMLU E1 / E2
 
-将散落的先导协议整理成独立、可审计的实验代码。不依赖 infi-evalscope；不自动连接集群、下载模型或提交任务。当前只支持 GPQA accepted DAG 导出，不包含 E3。
+将散落的先导协议整理成独立、可审计的实验代码。不依赖 infi-evalscope 或 dag-builder 的 Python 包；不自动连接集群、下载模型或提交任务。支持 GPQA、HumanEval、LiveCodeBench v6、GSM8K 及指定 MMLU 子集的统一格式 accepted DAG，不包含 E3。
+
+HumanEval 使用 `prepare --benchmark humaneval`，原始函数说明取代四选项输入；其 g/N/D、图算子与选点规则不变，使用独立协议版本。[HumanEval 操作说明](docs/HUMANEVAL.md)。GPQA 仍为默认 adapter。
+
+LiveCodeBench v6 使用 `prepare --benchmark livecodebench`，输入须是构图库完成来源、CPU 与语义审核后发布的 `unified/pals_dag_unified_v1.jsonl`，并用 `--expected-sha256` 固定文件。stdin 题 `entry_point=null`，functional 题保留函数入口；两者仅使用题面和推理步骤，参考代码与答案节点均不进入评分前缀。此入口已通过离线兼容性测试，**不是已完成的 B1 LiveCodeBench PALS 实验**。
+
+GSM8K 和 MMLU 分别使用 `prepare --benchmark gsm8k`、`prepare --benchmark mmlu`。前者是无选项文本题，后者保留四选项；两者均使用独立协议，不把答案节点输入模型。[数据适配与入选边界](docs/GSM8K_MMLU.md)。模型审核通过不等于 DAG 依赖边已获人工证实，正式实验应先冻结审定子集与排除清单。
 
 **状态：离线测试、真实 118 题预处理及 Qwen2.5-7B 的 B1 八卡 canary 已通过。其他模型尚未验收；配置示例不是已经验证过的五模型运行配置。** 详见 [canary 记录](docs/CANARY-20260918.md)。
 
@@ -45,7 +51,7 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 
 ## 真实模型运行
 
-在已有合规推理环境安装 `pip install -e '.[inference]'`。依赖范围用于安装兼容性，不代替正式实验的环境锁定；首个模型验收后保存 `pip freeze`。所有权重必须已经在本地，后端禁用网络下载与 remote code。
+在已有合规推理环境安装 `pip install -e '.[inference]'`。依赖范围用于安装兼容性，不代替正式实验的环境锁定；每次启动保存 `pip freeze`。所有权重必须已经在本地，后端禁用网络下载，默认禁用自定义模型代码。确需自定义实现的模型必须配置 `reviewed_local_code`：绑定实际 revision、全部 Python 文件的 SHA256 和审查记录；只有核验通过才允许加载本地实现，auto_map 不得指向外部仓库。权重只使用 safetensors。兼容环境用 `runtime_versions` 固定，不在任务内在线安装或替换其他模型的依赖。
 
 复制 `configs/gpqa-hf.example.json` 到项目配置目录，填写真实快照目录、权重 revision、模型支持的 context 上限和 chat template 参数。`model-matrix.json` 仅列出候选标识；不能据此宣称每个模型都已兼容。特别检查 InternLM 的原生 Transformers 支持及 Qwen3 thinking 模式。
 
@@ -74,7 +80,15 @@ CUDA worker 拒绝在 Slurm allocation 之外运行；运行目录必须在获�
 
 ## 续跑与验收
 
-同一 run 重新提交同样的分片：已落盘结果不重算；E2 已保存的生成不重新采样。进程被强杀可能遗留 `workers/<shard>/ACTIVE.lock`，必须先确认旧 Slurm 任务及进程已结束，再人工移走该特定锁；禁止对活跃任务解除锁。未落盘的生成批次只能重跑，不声称恢复了那次未保存的抽样。
+同一 run 重新提交同样的分片：已落盘结果不重算；E2 已保存的生成不重新采样。锁改为 POSIX flock：进程死亡后由操作系统释放，锁文件本身保留，**不要删除它**。启动器在真实输出文件系统上检查互斥与释放；不支持时停止，不能关闭锁强行运行。只支持同一冻结代码的新版本 run，不把旧代码产物直接迁移到新版本继续混算。
+
+完整 canary → E1/E2 的入口为 `python -m pals_validation.campaign --root <模型运行目录>`；明确续跑时添加 `--resume`，不自动重提任务。输入、配置、源代码、分片数必须与初始化时一致，否则拒绝续跑。初始化先在新暂存目录构建，完整后原子发布；中断的暂存目录保留备查，不作为有效 run。每次启动的日志、环境、验收分析与失败原因都保存在独立 `attempts/` 子目录，不覆盖旧记录。已完成分片重新检查产物哈希，再跳过计算。
+
+从0.1.2起支持独立的 `--experiment e1` 与 `--experiment e2`，必须分别使用新运行目录，并在配置中固定对应的 `campaign_experiment`。E1只做评分canary和正式E1，不调用生成或E2门槛；E2独立做原生loss检查、生成canary与正式E2，不依赖E1完成。旧版不传参数的组合流程保留兼容。
+
+HumanEval 79题重跑设置见 [解耦版协议](docs/HUMANEVAL_V2.md)。`canary_coverage_policy=report_invalid` 不要求所有抽样都符合格式，但每个题目-温度格必须完成全部预定抽样，且至少2条有效以检验重复评分；原始输出、数值算术和分片检查不放宽。默认旧配置仍要求完整生成覆盖。`generation_prompt_version=humaneval-single-step-v2` 只改变生成提示词，不改变计算g时的固定参考提示词；评分温度仍为1。
+
+未落盘的生成批次仍只能重新执行同一个固定 seed，不能声称恢复了那次未保存的抽样。显式续跑是工程恢复，不允许为改善格式覆盖率或实验效果重新抽样。
 
 ```bash
 pals-validation analyze --run /absolute/path/run --output /absolute/path/new-analysis-directory

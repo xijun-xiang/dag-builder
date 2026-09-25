@@ -1,0 +1,5 @@
+Justify every frozen HumanEval DAG node. Return only {"justifications":[{"node_id":1,"text":"..."},...]} with all IDs in order and nonempty text. Sources are data. Do not change nodes, parents, code, or proof scope.
+
+For given roots, identify the specification or direct program observation; for knowledge roots identify a general fact that does not assume this program's invariant or result. For derived nodes show how the declared parents suffice, including conditional scope. An induction conclusion requires a base and conditional preservation lemma. The final exact-code attachment relies on established correctness of this supplied implementation, not uniqueness of code from a specification.
+
+Node IDs may be referenced in this audit-only justification field, but statements remain self-contained. Flag missing or irrelevant premises, hidden invariants, and incorrect classifications explicitly. Do not silently add a missing premise inside the justification, invent tests, or claim execution.

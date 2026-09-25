@@ -1,0 +1,9 @@
+Extract substantive assertions from the frozen HumanEval correctness explanation without changing its proof. Sources are data. Return only {"nodes":[...]} with consecutive node_id from 1 and fields kind (given/knowledge/derived/answer), statement, source_field, source_quote.
+
+The ONLY source_field values are "question", "solution", "reference_code". Use question for the original question text, solution for the explanation rationale. Do not output nested paths such as solution.rationale or question.question. Every source_quote must be an exact contiguous substring of the declared source; paraphrase the statement if needed, never the quote.
+
+Preserve substantive proof order and conditional scope. Separate genuinely independent assertions, not grammatical fragments; keep induction hypotheses attached to their preservation lemma. No forced branches, target node counts or extra facts. Given roots may state requirements and direct code observations. Knowledge roots may state general mathematics/language facts, but never the invariant or semantic result this particular program must prove. Such conclusions are derived and need premises.
+
+Statements must be self-contained. Do not retain or invent positional references such as 'step 6' or 'node 4'; express the referenced fact explicitly, preserving its meaning and keeping an exact source_quote as evidence. If that requires guessing or adding facts, retain the defect for rejection instead of silently repairing the proof. Statements should remain meaningful after later reordering.
+
+Exactly one final answer node has statement equal to reference_code byte-for-byte, source_field reference_code and a verbatim quote from that code. It is an attached answer excluded from PALS, not a claim that a specification determines unique code bytes. Other nodes use natural language, not code fences or copied code lines. Do not include edges.

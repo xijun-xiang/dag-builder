@@ -37,28 +37,37 @@ details{margin:8px 0}summary{cursor:pointer}#list{max-height:70vh;overflow:auto}
   document.getElementById('summary').textContent=`${payload.benchmark} · ${rows.length} 题 · ${payload.schema_version}`;
   const labels={given:'已知',knowledge:'知识',derived:'推导',answer:'答案'};
   const index=rows.map(row=>[row.item_id,row.provenance.source_id,row.problem.question,
-    ...row.dag.nodes.map(node=>node.statement)].join('\n').toLowerCase());
+    ...row.dag.nodes.map(node=>node.statement)].join('\\n').toLowerCase());
+  let selected=0;
   function show(row){
-    detail.replaceChildren();
+    selected=rows.indexOf(row);detail.replaceChildren();
     detail.append(el('h2',`${row.provenance.source_id} · ${row.benchmark}`),
       el('div',`item_id: ${row.item_id} · 来源审核: ${row.review.source_status}`,'muted small'),
       el('h3','题目'),el('pre',row.problem.question));
-    if(row.problem.choices)detail.append(el('pre',row.problem.choices.map((value,i)=>`${'ABCD'[i]}. ${value}`).join('\n')));
+    if(row.problem.choices)detail.append(el('pre',row.problem.choices.map((value,i)=>`${'ABCD'[i]}. ${value}`).join('\\n')));
     detail.append(el('h3',`推理 DAG · ${row.dag.nodes.length} 个节点`));
     for(const node of row.dag.nodes){
       const card=el('section',undefined,`node ${node.kind==='answer'?'answer':''}`);
-      card.append(el('div',`#${node.node_id} · ${labels[node.kind]} · 父节点: ${node.parents.length?node.parents.map(id=>'#'+id).join(', '):'无'}`,'badge'),el('pre',node.statement));
-      const audit=el('details');audit.append(el('summary','来源与依赖说明'),el('div',`来源字段: ${node.source_field}`,'small'),el('pre',node.source_quote),el('pre',node.justification));card.append(audit);detail.append(card);
+      card.append(el('div',`#${node.node_id} · ${labels[node.kind]} · 父节点: ${node.parents.length?node.parents.map(id=>'#'+id).join(', '):'无'}`,'badge'),
+        el('pre',node.statement));
+      const audit=el('details');audit.append(el('summary','来源与依赖说明'),
+        el('div',`来源字段: ${node.source_field}`,'small'),el('pre',node.source_quote),
+        el('pre',node.justification));card.append(audit);detail.append(card);
     }
     const edges=row.dag.nodes.flatMap(node=>node.parents.map(parent=>`#${parent} → #${node.node_id}`));
-    const extra=el('details');extra.append(el('summary',`全部 ${edges.length} 条边与来源哈希`),el('pre',edges.join('\n')),el('pre',JSON.stringify(row.provenance,null,2)));detail.append(extra);
+    const extra=el('details');extra.append(el('summary',`全部 ${edges.length} 条边与来源哈希`),
+      el('pre',edges.join('\\n')),el('pre',JSON.stringify(row.provenance,null,2)));
+    detail.append(extra);
     for(const button of list.children)button.classList.toggle('active',button.dataset.itemId===row.item_id);
   }
   function draw(){
     const q=search.value.trim().toLowerCase();list.replaceChildren();
-    rows.forEach((row,i)=>{if(q&&!index[i].includes(q))return;const button=el('button',`${row.provenance.source_id} · ${row.item_id}`);button.dataset.itemId=row.item_id;button.onclick=()=>show(row);list.append(button)});
+    rows.forEach((row,i)=>{if(q&&!index[i].includes(q))return;
+      const button=el('button',`${row.provenance.source_id} · ${row.item_id}`);
+      button.dataset.itemId=row.item_id;button.onclick=()=>show(row);list.append(button)});
     count.textContent=`${list.children.length} / ${rows.length}`;
-    if(list.children.length)show(rows.find(row=>row.item_id===list.children[0].dataset.itemId));else detail.replaceChildren(el('p','没有匹配的题目。','muted'));
+    if(list.children.length)show(rows.find(row=>row.item_id===list.children[0].dataset.itemId));
+    else detail.replaceChildren(el('p','没有匹配的题目。','muted'));
   }
   search.oninput=draw;draw();
 })();
@@ -66,17 +75,7 @@ details{margin:8px 0}summary{cursor:pointer}#list{max-height:70vh;overflow:auto}
 
 
 def render(rows, benchmark):
-    payload = {
-        "schema_version": "pals_dag_unified_view_v1",
-        "benchmark": benchmark,
-        "rows": rows,
-    }
-    encoded = json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
-    )
-    encoded = (
-        encoded.replace("<", "\\u003c")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
+    payload = {"schema_version": "pals_dag_unified_view_v1", "benchmark": benchmark, "rows": rows}
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    encoded = encoded.replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     return TEMPLATE.replace("__PAYLOAD__", encoded).encode("utf-8")

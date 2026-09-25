@@ -1,7 +1,9 @@
-"""Optional local Hugging Face backend; no evalscope dependency or remote code."""
+"""Local Hugging Face backend; custom code only by revision/hash allowlist."""
 import math
+from importlib.metadata import version
 from .metrics import pair
-from .protocol import SYSTEM, BoundaryTracker, parse_step, question, step_prefix
+from .model_policy import local_code_policy
+from .protocol import system_prompt, BoundaryTracker, parse_step, question, step_prefix
 
 
 def target_positions(context_length, target_length):
@@ -15,15 +17,19 @@ class HFBackend:
         import torch
         import transformers
         from transformers import AutoModelForCausalLM, AutoTokenizer
+        for package, required in config.get("runtime_versions", {}).items():
+            if version(package) != required:
+                raise ValueError(f"Runtime mismatch: {package} must be {required}")
+        reviewed = local_code_policy(model_path, config)
         self.torch, self.config = torch, config
         torch.set_num_threads(config.get("cpu_threads", 4))
         if torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=False)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=reviewed)
         dtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[config["dtype"]]
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_path, local_files_only=True, trust_remote_code=False,
+            model_path, local_files_only=True, trust_remote_code=reviewed, use_safetensors=True,
             torch_dtype=dtype, attn_implementation=config["attention"])
         self.model.to(config["device"]).eval()
         limit = getattr(self.model.config, "max_position_embeddings", None)
@@ -34,10 +40,11 @@ class HFBackend:
         if str(config["device"]).startswith("cuda"):
             self.versions["gpu"] = torch.cuda.get_device_name(config["device"])
 
-    def context(self, case, ids):
+    def context(self, case, ids, *, for_generation=False):
         by_id = {n["node_id"]: n for n in case["steps"]}
+        prompt_version = self.config.get("generation_prompt_version", "v1") if for_generation else "v1"
         base = self.tokenizer.apply_chat_template(
-            [{"role": "system", "content": SYSTEM}, {"role": "user", "content": question(case)}],
+            [{"role": "system", "content": system_prompt(case, prompt_version)}, {"role": "user", "content": question(case)}],
             tokenize=False, add_generation_prompt=True, **self.config["chat_template_kwargs"])
         return step_prefix(base, [by_id[i]["statement"] for i in ids])
 
@@ -73,7 +80,7 @@ class HFBackend:
         torch = self.torch
         from transformers import GenerationConfig, StoppingCriteriaList
         tok = self.tokenizer
-        prompt = self.context(case, prefix_ids)
+        prompt = self.context(case, prefix_ids, for_generation=True)
         ids = tok.encode(prompt, add_special_tokens=False)
         if len(ids) + self.config["max_new_tokens"] > self.config["max_context"]:
             raise ValueError("Prompt plus reserved generation budget exceeds max_context")
@@ -106,8 +113,13 @@ class HFBackend:
                 reason = "length"
             text = tok.decode(tokens, skip_special_tokens=True)
             rows.append({"repeat": index, "seed": seed, "raw_text": text,
-                         "generated_token_ids": tokens, "finish_reason": reason, "parse": parse_step(text)})
-        return {"prompt": prompt, "prompt_token_ids": ids, "rows": rows}
+                         "generated_token_ids": tokens, "finish_reason": reason,
+                         "parse": parse_step(text, case.get("task_type"))})
+        return {"prompt": prompt, "prompt_token_ids": ids, "rows": rows,
+                "generation_contract": {"prompt_version": self.config.get("generation_prompt_version", "v1"),
+                    "max_new_tokens": self.config["max_new_tokens"], "max_context": self.config["max_context"],
+                    "prompt_tokens": len(ids), "eos_token_ids": eos_ids, "pad_token_id": pad,
+                    "boundary": "</step>", "constrained_decoding": False}}
 
 
 class MockBackend:

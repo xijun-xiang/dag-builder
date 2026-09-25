@@ -3,7 +3,7 @@
 from .schemas import require, text
 
 
-def validate_parents(value, nodes):
+def validate_parents(value, nodes, *, reject_transitive=False):
     require(isinstance(value, dict), "dependencies must be an object")
     rows = value.get("parents")
     ids = [n["node_id"] for n in nodes]
@@ -33,29 +33,26 @@ def validate_parents(value, nodes):
         else:
             require(bool(parents), "derived/answer node has no declared premise")
         mapping[node["node_id"]] = parents
-    ancestor_cache = {}
+    if reject_transitive:
+        ancestor_cache = {}
 
-    def ancestors(node_id):
-        if node_id not in ancestor_cache:
-            found, pending = set(), list(mapping[node_id])
-            while pending:
-                current = pending.pop()
-                if current not in found:
-                    found.add(current)
-                    pending.extend(mapping[current])
-            ancestor_cache[node_id] = found
-        return ancestor_cache[node_id]
+        def node_ancestors(node_id):
+            if node_id not in ancestor_cache:
+                found, pending = set(), list(mapping[node_id])
+                while pending:
+                    current = pending.pop()
+                    if current not in found:
+                        found.add(current)
+                        pending.extend(mapping[current])
+                ancestor_cache[node_id] = found
+            return ancestor_cache[node_id]
 
-    for node_id, parents in mapping.items():
-        for parent in parents:
-            require(
-                not any(
-                    parent in ancestors(other)
-                    for other in parents
-                    if other != parent
-                ),
-                "transitively redundant direct dependency",
-            )
+        for parents in mapping.values():
+            for parent in parents:
+                require(
+                    not any(parent in node_ancestors(other) for other in parents if other != parent),
+                    "transitively redundant direct dependency",
+                )
     ancestors, pending = set(), [ids[-1]]
     while pending:
         current = pending.pop()

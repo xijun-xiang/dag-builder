@@ -65,7 +65,11 @@ class NativeClient:
                     "finish_reason": "stop",
                     "message": {
                         "role": "assistant",
-                        "reasoning_content": self.reasoning,
+                        "reasoning_content": (
+                            self.reasoning
+                            if request.get("thinking", {}).get("type") == "enabled"
+                            else None
+                        ),
                         "content": content,
                     },
                 }
@@ -238,6 +242,16 @@ class ThinkingTests(unittest.TestCase):
         self.assertEqual(review_input["solution"], SOLUTION)
         runner.run()
         self.assertEqual(len(client.calls), 7)
+
+    def test_general_native_protocol_preserves_reasoning_separation(self):
+        version = "mmlu-general-thinking-v1"
+        client = NativeClient(version=version)
+        result = Pipeline(self.root, native_config(version), client).run()
+        self.assertEqual(result["results"][0]["status"], "model_accepted")
+        self.assertEqual(len(client.calls), 7)
+        dag = read_json(self.root / "items" / self.item["item_id"] / "dag.json")
+        self.assertEqual(dag["construction_protocol"], version)
+        self.assertEqual(dag["native_solution"]["reasoning_content"], RATIONALE)
 
     def test_wrong_answer_stops_before_structuring(self):
         client = NativeClient(answer="B")

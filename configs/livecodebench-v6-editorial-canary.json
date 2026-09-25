@@ -1,0 +1,20 @@
+{
+  "base_url": "https://proxy.infix-ai.xyz/v1/",
+  "model": "deepseek-v4-flash",
+  "key_env": "JUDGE_API_KEY",
+  "task_type": "livecodebench",
+  "prompt_version": "livecodebench-editorial-pilot-v1",
+  "solution_source": "editorial_grounded_pilot",
+  "thinking": "enabled",
+  "reasoning_effort": "high",
+  "response_format": "json_object",
+  "max_tokens": 32768,
+  "timeout_seconds": 900,
+  "workers": 2,
+  "max_calls": 12,
+  "max_reserved_tokens": 600000,
+  "rate_limit_retries": 0,
+  "transport": "curl",
+  "strict_response_contract": true,
+  "content_gated_response": true
+}

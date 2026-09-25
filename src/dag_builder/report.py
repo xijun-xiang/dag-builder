@@ -7,7 +7,7 @@ from collections import Counter
 from .run_status import paused_items
 from .storage import digest, read_json, write_bytes_once, write_once
 
-REPORT_TEMPLATE_VERSION = "5"
+REPORT_TEMPLATE_VERSION = "8"
 
 
 def report_title(items, selection):
@@ -19,9 +19,19 @@ def report_title(items, selection):
         ) and selection.get("candidate_count") == len(items)
         return "GSM8K DAG 构造全量审查" if is_full_dataset else "GSM8K DAG 构造审查"
     if task_types == {"mmlu"}:
+        if selection.get("scope", "").startswith("all source-eligible"):
+            return "MMLU DAG 构造全量审查"
         return "MMLU DAG 构造试点审查"
     if task_types == {"gpqa"}:
         return "GPQA-Diamond DAG 构造审查"
+    if task_types == {"humaneval"}:
+        return "HumanEval 参考代码解释与 DAG 审查（未执行代码）"
+    if task_types == {"livecodebench"}:
+        if all(item.get("reference_origin") == "official_editorial" for item in items):
+            return "LiveCodeBench 官方题解构图可行性试用（非正式验收）"
+        if all(item.get("reference_execution") == "passed_frozen_tests_not_exhaustive_proof" for item in items):
+            return "LiveCodeBench v6：测试通过参考程序的解释与 DAG 审查"
+        return "LiveCodeBench v6 参考程序候选（需独立执行验收）"
     return "DAG 构造审查"
 
 
@@ -78,7 +88,7 @@ def overview(root):
         "returned_models": dict(returned_models),
         "monetary_cost": None,
         "cost_note": "No verified unit price configured; missing usage is not zero cost.",
-        "claim": "engineering pilot; same-model synthesis/review, no PALS validation claim",
+        "claim": "same-model synthesis/review; not independent gold or a PALS validation result",
     }
 
 
@@ -111,12 +121,21 @@ def render(root):
             + "</h2>"
         )
         rendered_question = item["question"]
-        if item.get("task_type") != "gsm8k":
+        if item.get("task_type") not in ("gsm8k", "humaneval", "livecodebench"):
             rendered_question += "\n" + "\n".join(
                 f"{label}. {choice}" for label, choice in zip("ABCD", item["choices"])
             )
         blocks.append("<pre>" + html.escape(rendered_question) + "</pre>")
-        blocks.append("<p>数据集答案：" + item["gold_answer"] + "</p>")
+        if item.get("task_type") == "humaneval":
+            blocks.append("<h3>官方参考 completion（未执行）</h3><pre>"
+                          + html.escape(item["canonical_solution"]) + "</pre>")
+        elif item.get("task_type") == "livecodebench":
+            label = ("官方题解；派生 DAG 非官方标注" if item.get("reference_origin") == "official_editorial"
+                     else "模型生成，非官方 gold")
+            blocks.append("<p>参考来源：" + label + "；执行状态："
+                          + html.escape(item["reference_execution"]) + "。测试通过不证明 DAG 正确。</p>")
+        else:
+            blocks.append("<p>数据集答案：" + html.escape(item["gold_answer"]) + "</p>")
         if item.get("task_type") == "gpqa":
             blocks.append(
                 "<h3>GPQA 官方专家 Explanation（未重新生成）</h3><pre>"
@@ -155,6 +174,7 @@ def render(root):
                 + "</pre>"
             )
         for label, path in [
+            ("LiveCodeBench 参考程序候选", directory / "reference_code/output.json"),
             ("修复前原始状态与产物", directory / "baseline.json"),
             ("确定性拓扑排序", directory / "topology.json"),
             ("模型复核与修复提案", directory / "repair/output.json"),

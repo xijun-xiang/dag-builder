@@ -47,9 +47,24 @@ class MathQuestion:
 
 
 def public_question(item):
+    if item.get("task_type") == "livecodebench":
+        require(text(item.get("question")), "empty LiveCodeBench question")
+        require(item.get("io_type") in ("functional", "stdin"), "invalid LiveCodeBench I/O type")
+        return {key: item[key] for key in ("task_type", "question", "io_type", "entry_point", "starter_code")}
+    if item.get("task_type") == "humaneval":
+        require(text(item.get("question")), "empty HumanEval prompt")
+        require(text(item.get("entry_point")) and item["entry_point"].isidentifier(), "invalid entry point")
+        return {"task_type": "humaneval", "question": item["question"], "entry_point": item["entry_point"]}
     if item.get("task_type") == "gsm8k":
         return {"task_type": "gsm8k", **MathQuestion(item["question"]).to_dict()}
     return Question(item["question"], tuple(item["choices"])).to_dict()
+
+
+def validate_code_explanation(value):
+    require(isinstance(value, dict) and set(value) == {"rationale"},
+            "reference explanation must contain only rationale, not rewritten code")
+    require(text(value["rationale"]), "empty algorithm explanation")
+    require("```" not in value["rationale"], "algorithm explanation must be prose, not fenced code")
 
 
 def validate_solution(value):
@@ -71,6 +86,7 @@ def parse_native_solution(message):
     content = message.get("content")
     require(text(reasoning), "missing native reasoning_content; no content fallback")
     require(text(content), "missing final response")
+    require(reasoning.strip() != content.strip(), "native reasoning and final content are duplicated; no field fallback")
     matches = re.findall(r"^Final answer:[ \t]*([ABCD])[ \t]*$", content, re.MULTILINE)
     require(len(matches) == 1, "expected exactly one Final answer line")
     require(
@@ -159,7 +175,7 @@ def validate_review(value, stage):
         )
 
 
-def validate_nodes(value, question, rationale, extra_sources=None):
+def validate_nodes(value, question, rationale, extra_sources=None, *, allow_reference_code_facts=False):
     require(isinstance(value, dict), "nodes output must be an object")
     nodes = value.get("nodes")
     require(isinstance(nodes, list) and len(nodes) >= 2, "at least two nodes required")
@@ -180,7 +196,10 @@ def validate_nodes(value, question, rationale, extra_sources=None):
         require(text(node.get("statement")), "empty assertion")
         field = node.get("source_field")
         require(field in sources, "invalid source field")
-        if field == "correct_answer":
+        if field == "reference_code" and allow_reference_code_facts:
+            require(node["kind"] in ("given", "answer"),
+                    "reference-code observations must be given, not derived or knowledge")
+        elif field in ("correct_answer", "reference_code"):
             require(
                 node["kind"] == "answer", "answer label cannot be a reasoning premise"
             )

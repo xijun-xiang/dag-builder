@@ -11,6 +11,7 @@ from .schemas import (
     validate_nodes,
     validate_review,
     validate_solution,
+    validate_code_explanation,
 )
 from .validation import validate_justifications, validate_parents
 
@@ -26,7 +27,9 @@ THINKING_STAGES = ("solve", "structure_solution", *STAGES[1:])
 REFERENCE_STAGES = STAGES[1:]
 REPAIR_STAGES = ("repair", "justify", "review_repair")
 REVISION_STAGES = ("revise", "audit", "adjudicate")
-NATIVE_PROMPT_VERSIONS = ("mmlu-thinking-v1", "mmlu-thinking-v2")
+MMLU_NATIVE_VERSIONS = (
+    "mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1",
+)
 V2_STAGE_TOKEN_CAPS = {
     "structure_solution": 2048,
     "review_solution": 2048,
@@ -38,18 +41,48 @@ V2_STAGE_TOKEN_CAPS = {
 
 
 def stages_for(config):
+    if config.task_type == "livecodebench":
+        if config.prompt_version in ("calibri-lcb-repair-v1", "calibri-lcb-repair-v2"):
+            return ("repair", "dependencies", "review_dag")
+        if config.prompt_version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "t2ance-lcb-normalize-v1"):
+            return ("normalize", "dependencies", "review_dag")
+        if config.prompt_version == "livecodebench-editorial-pilot-v1":
+            return ("atomize", "review_dag")
+        return ("reference_code",) if config.prompt_version == "livecodebench-reference-v1" else STAGES
     if config.prompt_version == "gpqa-revision-v1":
         return REVISION_STAGES
     if config.prompt_version == "gpqa-repair-v1":
         return REPAIR_STAGES
     if config.task_type == "gpqa":
         return REFERENCE_STAGES
-    return THINKING_STAGES if config.prompt_version in NATIVE_PROMPT_VERSIONS else STAGES
+    return THINKING_STAGES if config.prompt_version in MMLU_NATIVE_VERSIONS else STAGES
 
 
 def prompt(
     stage, version="v1", task_type="mmlu", solution_source="independent_generation"
 ):
+    if task_type == "livecodebench":
+        if not ((version == "livecodebench-reference-v1" and stage == "reference_code")
+                or (version == "livecodebench-dag-v1" and stage in STAGES)
+                or (version == "livecodebench-editorial-pilot-v1" and stage in ("atomize", "review_dag"))
+                or (version in ("calibri-lcb-repair-v1", "calibri-lcb-repair-v2") and stage in ("repair", "dependencies", "review_dag"))
+                or (version in ("calibri-lcb-normalize-v1", "calibri-lcb-normalize-v2", "calibri-lcb-normalize-v3", "t2ance-lcb-normalize-v1")
+                    and stage in ("normalize", "dependencies", "review_dag"))):
+            raise ValueError("unsupported LiveCodeBench stage or protocol")
+        if version == "calibri-lcb-normalize-v2" and stage != "normalize":
+            version = "calibri-lcb-normalize-v1"
+        if version == "calibri-lcb-normalize-v3" and stage != "review_dag":
+            version = "calibri-lcb-normalize-v2" if stage == "normalize" else "calibri-lcb-normalize-v1"
+        if version == "t2ance-lcb-normalize-v1" and stage == "dependencies":
+            version = "calibri-lcb-normalize-v1"
+        if version == "calibri-lcb-repair-v1" and stage == "dependencies":
+            version = "calibri-lcb-normalize-v1"
+        if version == "calibri-lcb-repair-v2" and stage in ("dependencies", "review_dag"):
+            base_version = "calibri-lcb-normalize-v1" if stage == "dependencies" else "calibri-lcb-repair-v1"
+            base = files("dag_builder").joinpath("prompts", base_version, stage + ".md").read_text(encoding="utf-8")
+            supplement = files("dag_builder").joinpath("prompts", version, stage + ".md").read_text(encoding="utf-8")
+            return base + "\n" + supplement
+        return files("dag_builder").joinpath("prompts", version, stage + ".md").read_text(encoding="utf-8")
     allowed = (
         REVISION_STAGES
         if version == "gpqa-revision-v1"
@@ -58,12 +91,12 @@ def prompt(
         else REFERENCE_STAGES
         if task_type == "gpqa"
         else THINKING_STAGES
-        if version in NATIVE_PROMPT_VERSIONS
+        if version in MMLU_NATIVE_VERSIONS
         else STAGES
     )
     if stage not in allowed:
         raise ValueError("unknown stage or prompt version")
-    if task_type == "mmlu" and version not in ("v1", *NATIVE_PROMPT_VERSIONS):
+    if task_type == "mmlu" and version not in ("v1", *MMLU_NATIVE_VERSIONS):
         raise ValueError("unsupported mmlu prompt version")
     if task_type == "gsm8k" and version not in ("gsm8k-v1", "gsm8k-v2"):
         raise ValueError("gsm8k requires a supported gsm8k prompt version")
@@ -73,7 +106,9 @@ def prompt(
         "gpqa-revision-v1",
     ):
         raise ValueError("gpqa requires the official-reference protocol")
-    if task_type not in ("mmlu", "gsm8k", "gpqa"):
+    if task_type == "humaneval" and version not in ("humaneval-reference-v1", "humaneval-reference-v2", "humaneval-reference-v3", "humaneval-reference-v4", "humaneval-reference-v5"):
+        raise ValueError("humaneval requires the reference-code protocol")
+    if task_type not in ("mmlu", "gsm8k", "gpqa", "humaneval"):
         raise ValueError("unknown task type")
     filename = (
         "solve-diagnostic-repair.md"
@@ -83,6 +118,9 @@ def prompt(
         else stage + ".md"
     )
     location = files("dag_builder").joinpath("prompts", version, filename)
+    # v5 changes only atomization and DAG review. Shared v4 prompts stay frozen.
+    if version == "humaneval-reference-v5" and stage not in ("atomize", "review_dag"):
+        location = files("dag_builder").joinpath("prompts", "humaneval-reference-v4", filename)
     if version == "gpqa-repair-v1" and stage == "justify":
         location = files("dag_builder").joinpath(
             "prompts", "gpqa-reference-v1", "justify.md"
@@ -101,6 +139,13 @@ def prompt(
 
 def reference_solution(item, results):
     """Official references are source data, never a fabricated solve completion."""
+    if item.get("task_type") == "livecodebench":
+        return {"answer": item["reference_code"], "rationale": results["solve"]["rationale"],
+                "origin": "model_explanation_of_test_verified_candidate",
+                "reference_execution": "passed_frozen_tests_not_exhaustive_proof"}
+    if item.get("task_type") == "humaneval":
+        return {"answer": item["canonical_solution"], "rationale": results["solve"]["rationale"],
+                "origin": "model_explanation_of_official_code", "reference_execution": "not_executed"}
     if item.get("task_type") == "gpqa":
         return {
             "answer": item["gold_answer"],
@@ -114,13 +159,26 @@ def reference_solution(item, results):
 
 
 def stage_input(
-    stage,
-    item,
-    results,
-    solution_source="independent_generation",
-    prompt_version=None,
+    stage, item, results, solution_source="independent_generation", prompt_version=None
 ):
     data = {"question": public_question(item)}
+    if item.get("task_type") in ("humaneval", "livecodebench"):
+        require(stage in STAGES, "unknown HumanEval stage")
+        # Tests are intentionally absent; allowlist fields instead of copying source.
+        is_lcb = item.get("task_type") == "livecodebench"
+        data["reference_code"] = item["reference_code"] if is_lcb else item["canonical_solution"]
+        data["reference_execution"] = "passed_frozen_tests_not_exhaustive_proof" if is_lcb else "not_executed"
+        if stage != "solve":
+            data["solution"] = reference_solution(item, results)
+        if stage == "atomize":
+            data["reference_sources"] = {"reference_code": data["reference_code"]}
+        if stage in ("dependencies", "justify", "review_dag"):
+            data["nodes"] = results["atomize"]["nodes"]
+        if stage in ("justify", "review_dag"):
+            data["parents"] = results["dependencies"]["parents"]
+        if stage == "review_dag":
+            data["justifications"] = results["justify"]["justifications"]
+        return data
     if item.get("task_type") == "gpqa":
         require(stage in REFERENCE_STAGES, "official-reference protocol has no solve")
         data["reference_sources"] = {
@@ -135,8 +193,7 @@ def stage_input(
         and prompt_version == "mmlu-thinking-v2"
         and stage in ("atomize", "review_dag")
     ):
-        # Choices are public task input, not answer authority.  They are exposed
-        # only after solve so the DAG can prove the final label-to-text mapping.
+        # The public choices ground the final label-to-text mapping, not the answer.
         data["reference_sources"] = {
             f"choice_{label}": value
             for label, value in zip("ABCD", item["choices"])
@@ -167,12 +224,8 @@ def stage_input(
     return data
 
 
-def payload(stage, data, config):
-    native = config.prompt_version in NATIVE_PROMPT_VERSIONS
-    if native or config.task_type == "gpqa":
-        # Explicit labels in every model request; preserve the original item bytes.
-        data = dict(data, question=dict(data["question"]))
-        data["question"]["choices"] = dict(zip("ABCD", data["question"]["choices"]))
+def request_controls(config, *, native_solve=False, stage=None):
+    """Shared production/probe serialization; never guess provider overrides."""
     request = {
         "model": config.model,
         "temperature": config.temperature,
@@ -182,27 +235,10 @@ def payload(stage, data, config):
             and stage in V2_STAGE_TOKEN_CAPS
             else config.max_tokens
         ),
-        "messages": [
-            {
-                "role": "system",
-                "content": prompt(
-                    stage,
-                    config.prompt_version,
-                    config.task_type,
-                    config.solution_source,
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(data, ensure_ascii=False, sort_keys=True),
-            },
-        ],
     }
     thinking = config.thinking
     reasoning_effort = config.reasoning_effort
-    if config.prompt_version == "mmlu-thinking-v2" and stage != "solve":
-        # Native reasoning is required only for solve. Fixed-schema transforms
-        # are cheaper and more reliable without hidden long-form reasoning.
+    if config.prompt_version == "mmlu-thinking-v2" and stage not in (None, "solve"):
         thinking = "disabled"
         reasoning_effort = None
     if thinking is not None:
@@ -213,12 +249,32 @@ def payload(stage, data, config):
         )  # Official thinking mode ignores sampling temperature.
     if reasoning_effort is not None:
         request["reasoning_effort"] = reasoning_effort
-    if config.response_format is not None and not (native and stage == "solve"):
+    if config.response_format is not None and not native_solve:
         request["response_format"] = {"type": config.response_format}
     return request
 
 
-def validate(stage, value, data, solution_source="independent_generation"):
+def payload(stage, data, config):
+    native = config.prompt_version in MMLU_NATIVE_VERSIONS
+    if native or config.task_type == "gpqa":
+        # Explicit labels in every model request; preserve the original item bytes.
+        data = dict(data, question=dict(data["question"]))
+        data["question"]["choices"] = dict(zip("ABCD", data["question"]["choices"]))
+    request = request_controls(config, native_solve=native and stage == "solve", stage=stage)
+    request["messages"] = [
+        {
+            "role": "system",
+            "content": prompt(stage, config.prompt_version, config.task_type, config.solution_source),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(data, ensure_ascii=False, sort_keys=True),
+        },
+    ]
+    return request
+
+
+def validate(stage, value, data, solution_source="independent_generation", *, prompt_version=None):
     if stage == "structure_solution":
         validate_solution(value)
         require(
@@ -226,7 +282,9 @@ def validate(stage, value, data, solution_source="independent_generation"):
             "structured answer changed; no repair allowed",
         )
     elif stage == "solve":
-        if solution_source in (
+        if data["question"].get("task_type") in ("humaneval", "livecodebench"):
+            validate_code_explanation(value)
+        elif solution_source in (
             "answer_conditioned_generation",
             "diagnostic_repair_generation",
         ):
@@ -243,10 +301,28 @@ def validate(stage, value, data, solution_source="independent_generation"):
             data["question"]["question"],
             data["solution"]["rationale"],
             extra_sources=data.get("reference_sources"),
+            allow_reference_code_facts=(prompt_version in ("humaneval-reference-v5", "livecodebench-dag-v1")
+                                        and data["question"].get("task_type") in ("humaneval", "livecodebench")),
         )
+        if data["question"].get("task_type") in ("humaneval", "livecodebench"):
+            require(value["nodes"][-1]["statement"] == data["reference_code"],
+                    "terminal answer must preserve reference completion verbatim")
+            require(value["nodes"][-1]["source_field"] == "reference_code", "code answer source required")
+            require(all("```" not in n["statement"] for n in value["nodes"][:-1]),
+                    "algorithm steps must not be fenced code")
     elif stage == "dependencies":
-        validate_parents(value, data["nodes"])
+        validate_parents(
+            value, data["nodes"],
+            reject_transitive=prompt_version in ("mmlu-thinking-v2", "gsm8k-v2"),
+        )
     elif stage == "justify":
         validate_justifications(value, data["nodes"])
     else:
         raise ValueError("unknown stage")
+    if prompt_version in ("humaneval-reference-v4", "humaneval-reference-v5"):
+        from .humaneval_quality import validate_quality
+        validate_quality(stage, value, data, version=prompt_version)
+    if prompt_version == "livecodebench-dag-v1":
+        # Reuse exactly the reviewed code-fact/root/positional-reference checks.
+        from .humaneval_quality import validate_quality
+        validate_quality(stage, value, data, version="humaneval-reference-v5")
