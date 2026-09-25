@@ -55,7 +55,7 @@ def public_input(item):
             "purpose": "derived reference explanation, not a preserved native generation trajectory"}
 
 
-def normalize(value, item):
+def normalize(value, item, *, prompt_version=None):
     require(isinstance(value, dict) and set(value) == {"steps", "omissions"},
             "normalization needs exactly steps and omissions")
     steps, omissions = value["steps"], value["omissions"]
@@ -95,8 +95,12 @@ def normalize(value, item):
         require(isinstance(omission, dict) and set(omission) == {"source_refs", "reason"}
                 and text(omission["reason"]), "invalid omission record")
         anchors(omission["source_refs"])
-    protocol = ("t2ance-lcb-normalize-v1" if output_source_field(item) == "t2ance_output"
-                else PROTOCOL)
+    if output_source_field(item) == "t2ance_output":
+        protocol = prompt_version or "t2ance-lcb-normalize-v1"
+        require(protocol in ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2"),
+                "t2ance normalization protocol mismatch")
+    else:
+        protocol = PROTOCOL
     return {"protocol": protocol, "nodes": nodes, "omissions": omissions,
             "original_output_sha256": digest(item["raw_output"]),
             "code_sha256": digest(item["reference_code"]),
@@ -122,7 +126,8 @@ def assemble_graph(value, normalized, item):
     validate_nodes({"nodes": graph}, item["question"], "", extra_sources={
         output_source_field(item): item["raw_output"], "reference_code": item["reference_code"]},
         allow_reference_code_facts=True)
-    validate_parents({"parents": [{"node_id": n["node_id"], "parents": n["parents"]} for n in graph]}, graph)
+    validate_parents({"parents": [{"node_id": n["node_id"], "parents": n["parents"]} for n in graph]},
+                     graph, require_minimal=normalized["protocol"] == "t2ance-lcb-normalize-v2")
     validate_justifications({"justifications": [{"node_id": n["node_id"], "text": n["justification"]}
                                                for n in graph]}, graph)
     return {"nodes": graph}

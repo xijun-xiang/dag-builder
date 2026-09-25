@@ -185,8 +185,8 @@ class CALIBRIPipeline(Pipeline):
         data, stage = public_input(item), "normalize"
         try:
             proposal = self.request_stage(stage, item, data, payload(stage, data, self.config),
-                                          lambda v: normalize(v, item))
-            normalized = normalize(proposal, item)
+                                          lambda v: normalize(v, item, prompt_version=self.config.prompt_version))
+            normalized = normalize(proposal, item, prompt_version=self.config.prompt_version)
             write_once(directory / "normalization.json", normalized)
             stage = "dependencies"
             dependency_input = {**data, "normalized": normalized}

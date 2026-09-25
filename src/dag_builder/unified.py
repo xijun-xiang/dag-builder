@@ -114,9 +114,10 @@ def convert_record(record, benchmark, source_file_sha256):
         if source_status == "t2ance_derived_tested_reference":
             _require(isinstance(source_dag, dict)
                      and source.get("reference_origin") == "t2ance_model_output"
-                     and source_dag.get("construction_protocol") == "t2ance-lcb-normalize-v1"
+                     and source_dag.get("construction_protocol") in
+                     ("t2ance-lcb-normalize-v1", "t2ance-lcb-normalize-v2")
                      and source_dag.get("normalization", {}).get("protocol") ==
-                     "t2ance-lcb-normalize-v1", "t2ance protocol/source mismatch")
+                     source_dag.get("construction_protocol"), "t2ance protocol/source mismatch")
         _require(isinstance(source_dag, dict) and source_dag.get("source") == source
                  and source_dag.get("item_id") == item_id
                  and source_dag.get("formal_eligible") is False

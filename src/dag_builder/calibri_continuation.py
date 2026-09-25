@@ -107,7 +107,7 @@ def _replay_recorded_calls(root, config, *, old_uncertain=()):
         output = parse_object(choices[0]["message"].get("content"))
         require(output == read_json(output_path), "recorded stage output changed")
         if source_stage == "normalize":
-            normalize(output, items[item_id])
+            normalize(output, items[item_id], prompt_version=controls.prompt_version)
         elif source_stage == "dependencies":
             normalized = read_json(path.parent.parent.parent / "normalization.json")
             assemble_graph(output, normalized, items[item_id])

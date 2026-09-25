@@ -17,7 +17,7 @@ from test_calibri_normalize import fixture as graph_fixture
 from test_t2ance_source import fixture as source_fixture
 
 
-def prepared_fixture(root, *, held=False):
+def prepared_fixture(root, *, held=False, prompt_version="t2ance-lcb-normalize-v1"):
     item, proposal, dependencies = graph_fixture()
     identity, raw = source_fixture()
     item.update({k: identity[k] for k in ("question_id", "question_title", "platform",
@@ -68,7 +68,8 @@ def prepared_fixture(root, *, held=False):
         "status": "processed", "job_id": "synthetic", "hostname": "synthetic", "executed": 1,
         "passed": 1, "input_manifest_sha256": sha256(execution / "input-manifest.json"),
         "results": {result_path.name: sha256(result_path)}})
-    prepare(source, execution, execution / "input-manifest.json", run, limit=1)
+    prepare(source, execution, execution / "input-manifest.json", run, limit=1,
+            prompt_version=prompt_version)
     from dag_builder.calibri_normalize import REVIEW_CHECKS as extra
     from dag_builder.schemas import REVIEW_CHECKS
     audit = {"decision": "accept", "checks": dict.fromkeys((*REVIEW_CHECKS["review_dag"], *extra), True),
@@ -77,13 +78,13 @@ def prepared_fixture(root, *, held=False):
 
 
 class Client:
-    def __init__(self, outputs):
-        self.outputs, self.calls = outputs, []
+    def __init__(self, outputs, prompt_version="t2ance-lcb-normalize-v1"):
+        self.outputs, self.calls, self.prompt_version = outputs, [], prompt_version
 
     def complete(self, request):
         self.calls.append(request)
         stage = next(s for s in self.outputs if request["messages"][0]["content"] ==
-                     prompt(s, "t2ance-lcb-normalize-v1", "livecodebench"))
+                     prompt(s, self.prompt_version, "livecodebench"))
         return {"choices": [{"finish_reason": "stop", "message": {
             "content": json.dumps(self.outputs[stage])}}]}
 
@@ -146,6 +147,24 @@ class T2ancePipelineTests(unittest.TestCase):
             self.assertEqual(selection["selected_ids"], ["a" * 20])
             self.assertIn({"item_id": "d" * 20,
                            "reason": "not_independently_cpu_tested"}, selection["excluded"])
+
+    def test_v2_uses_a_new_frozen_protocol_without_changing_v1(self):
+        version = "t2ance-lcb-normalize-v2"
+        with tempfile.TemporaryDirectory() as folder:
+            run, outputs = prepared_fixture(Path(folder).resolve(), prompt_version=version)
+            config = Config(task_type="livecodebench", prompt_version=version,
+                            solution_source="t2ance_reference_normalization", workers=1,
+                            max_calls=24, max_reserved_tokens=2000000)
+            self.assertEqual(stages_for(config), ("normalize", "dependencies", "review_dag"))
+            self.assertIn("minimal", prompt("normalize", version, "livecodebench"))
+            self.assertIn("redundant", prompt("dependencies", version, "livecodebench"))
+            client = Client(outputs, version)
+            result = T2ancePipeline(run, config, client).run()
+            self.assertEqual(result["results"][0]["status"], "model_accepted")
+            dag = read_json(run / "items" / ("a" * 20) / "dag.json")
+            self.assertEqual(dag["normalization"]["protocol"], version)
+            self.assertEqual(dag["construction_protocol"], version)
+            self.assertEqual(read_json(run / "t2ance-normalization-manifest.json")["protocol"], version)
 
 
 if __name__ == "__main__":

@@ -17,15 +17,18 @@ from .storage import digest, private_dir, read_json, write_bytes_once, write_onc
 from .t2ance_source import inspect_candidate
 
 PROTOCOL = "t2ance-lcb-normalize-v1"
+PROTOCOL_V2 = "t2ance-lcb-normalize-v2"
+PROTOCOLS = (PROTOCOL, PROTOCOL_V2)
 CALL_LIMIT = 240
 TOKEN_LIMIT = 16000000
 
 
 def prepare(source, execution, expected_manifest, root, *, limit=None,
             development_run=None, max_calls=24, max_reserved_tokens=2000000,
-            prior_calls=0, prior_reserved_tokens=0):
+            prior_calls=0, prior_reserved_tokens=0, prompt_version=PROTOCOL):
     """Freeze reviewed input only after the same independent CPU gate passes."""
     source, execution, root = Path(source), Path(execution), private_dir(root)
+    require(prompt_version in PROTOCOLS, "unknown t2ance normalization protocol")
     require(type(max_calls) is int and type(prior_calls) is int and prior_calls >= 0
             and 0 < max_calls <= CALL_LIMIT - prior_calls, "t2ance call allocation exceeded")
     require(type(max_reserved_tokens) is int and type(prior_reserved_tokens) is int
@@ -109,7 +112,7 @@ def prepare(source, execution, expected_manifest, root, *, limit=None,
                               "all remaining independent-CPU-passing candidates",
                  "development_run": str(development_run) if development_run else None,
                  "no_score_selection": True}
-    proof = {"protocol": PROTOCOL, "prompt_version": PROTOCOL,
+    proof = {"protocol": prompt_version, "prompt_version": prompt_version,
              "source_manifest_sha256": digest(manifest),
              "items_sha256": digest(items), "selection_sha256": digest(selection),
              "execution_completion_sha256": sha256(execution / "completion.json"),
@@ -136,9 +139,9 @@ def verify_prepared(root, config):
     """Offline gate repeated before every request and by the release audit."""
     proof = read_json(root / "t2ance-normalization-manifest.json")
     items, selection = read_json(root / "items.json"), read_json(root / "selection.json")
-    require(proof["protocol"] == PROTOCOL and digest(items) == proof["items_sha256"]
+    require(proof["protocol"] in PROTOCOLS and digest(items) == proof["items_sha256"]
             and digest(selection) == proof["selection_sha256"], "prepared t2ance input changed")
-    require(config.task_type == "livecodebench" and config.prompt_version == PROTOCOL
+    require(config.task_type == "livecodebench" and config.prompt_version == proof["prompt_version"]
             and config.solution_source == "t2ance_reference_normalization",
             "wrong t2ance protocol")
     require(config.max_calls <= proof["max_calls"] <= CALL_LIMIT - proof["prior_calls"]
@@ -179,7 +182,7 @@ def verify_prepared(root, config):
 
 class T2ancePipeline(CALIBRIPipeline):
     def run(self, limit=None, progress=None, through="review_dag"):
-        require(self.config.prompt_version == PROTOCOL and through == "review_dag",
+        require(self.config.prompt_version in PROTOCOLS and through == "review_dag",
                 "wrong t2ance run protocol")
         verify_prepared(self.root, self.config)
         return Pipeline.run(self, limit, progress, through)
@@ -198,13 +201,15 @@ def main():
     parser.add_argument("--max-reserved-tokens", type=int, default=2000000)
     parser.add_argument("--prior-calls", type=int, default=0)
     parser.add_argument("--prior-reserved-tokens", type=int, default=0)
+    parser.add_argument("--prompt-version", choices=PROTOCOLS, default=PROTOCOL)
     args = parser.parse_args()
     os.umask(0o077)
     with run_lock(args.root):
         print(json.dumps(prepare(args.source, args.execution, args.expected_manifest,
             args.root, limit=args.limit, development_run=args.development_run,
             max_calls=args.max_calls, max_reserved_tokens=args.max_reserved_tokens,
-            prior_calls=args.prior_calls, prior_reserved_tokens=args.prior_reserved_tokens),
+            prior_calls=args.prior_calls, prior_reserved_tokens=args.prior_reserved_tokens,
+            prompt_version=args.prompt_version),
             ensure_ascii=False))
 
 

@@ -5,6 +5,7 @@ import unittest
 
 from dag_builder import calibri_normalize as contract
 from dag_builder.schemas import REVIEW_CHECKS
+from dag_builder.validation import validate_parents
 
 
 def fixture():
@@ -84,6 +85,23 @@ class CALIBRINormalizeTests(unittest.TestCase):
             bad = {**dependencies, **changes}
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 contract.assemble_graph(bad, normalized, item)
+
+    def test_minimal_direct_edges_are_v2_only(self):
+        nodes = [{"node_id": 1, "kind": "given"},
+                 {"node_id": 2, "kind": "derived"},
+                 {"node_id": 3, "kind": "derived"},
+                 {"node_id": 4, "kind": "answer"}]
+        rows = {"parents": [
+            {"node_id": 1, "parents": []},
+            {"node_id": 2, "parents": [1]},
+            {"node_id": 3, "parents": [2]},
+            {"node_id": 4, "parents": [2, 3]},
+        ]}
+        validate_parents(rows, nodes)
+        with self.assertRaisesRegex(ValueError, "transitively redundant"):
+            validate_parents(rows, nodes, require_minimal=True)
+        rows["parents"][-1]["parents"] = [3]
+        validate_parents(rows, nodes, require_minimal=True)
 
     def test_accept_requires_all_semantic_checks(self):
         keys = (*REVIEW_CHECKS["review_dag"], *contract.REVIEW_CHECKS)
