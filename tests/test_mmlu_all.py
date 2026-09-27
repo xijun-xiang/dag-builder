@@ -78,6 +78,27 @@ class MMLUAllTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "candidate answer"):
             validate("atomize", bad, data, prompt_version=version)
 
+    def test_v4_rejects_transitively_redundant_direct_edges(self):
+        version = "mmlu-general-thinking-v4"
+        config = Config(prompt_version=version, thinking="enabled")
+        self.assertEqual(stages_for(config), THINKING_STAGES)
+        self.assertEqual(prompt("atomize", version),
+                         prompt("atomize", "mmlu-general-thinking-v3"))
+        self.assertNotEqual(prompt("dependencies", version),
+                            prompt("dependencies", "mmlu-general-thinking-v3"))
+        nodes = [
+            {"node_id": 1, "kind": "knowledge"},
+            {"node_id": 2, "kind": "derived"},
+            {"node_id": 3, "kind": "answer"},
+        ]
+        redundant = {"parents": [
+            {"node_id": 1, "parents": []},
+            {"node_id": 2, "parents": [1]},
+            {"node_id": 3, "parents": [1, 2]},
+        ]}
+        with self.assertRaisesRegex(ValueError, "transitively redundant"):
+            validate("dependencies", redundant, {"nodes": nodes}, prompt_version=version)
+
     def test_standalone_pals_reader_has_the_same_subject_set(self):
         location = Path(__file__).resolve().parents[1] / "pals-validation" / "src"
         sys.path.insert(0, str(location))

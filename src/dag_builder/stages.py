@@ -28,7 +28,7 @@ REFERENCE_STAGES = STAGES[1:]
 REPAIR_STAGES = ("repair", "justify", "review_repair")
 REVISION_STAGES = ("revise", "audit", "adjudicate")
 MMLU_NATIVE_VERSIONS = (
-    "mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1", "mmlu-general-thinking-v2", "mmlu-general-thinking-v3",
+    "mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1", "mmlu-general-thinking-v2", "mmlu-general-thinking-v3", "mmlu-general-thinking-v4",
 )
 V2_STAGE_TOKEN_CAPS = {
     "structure_solution": 2048,
@@ -130,6 +130,7 @@ def prompt(
         "mmlu-thinking-v2": ("mmlu-thinking-v1", "v1"),
         "mmlu-general-thinking-v2": ("mmlu-general-thinking-v1",),
         "mmlu-general-thinking-v3": ("mmlu-general-thinking-v2", "mmlu-general-thinking-v1"),
+        "mmlu-general-thinking-v4": ("mmlu-general-thinking-v3", "mmlu-general-thinking-v2", "mmlu-general-thinking-v1"),
         "gsm8k-v2": ("gsm8k-v1",),
     }.get(version, ())
     for fallback in fallback_versions:
@@ -192,7 +193,7 @@ def stage_input(
         }
     elif (
         item.get("task_type") == "mmlu"
-        and prompt_version in ("mmlu-thinking-v2", "mmlu-general-thinking-v3")
+        and prompt_version in ("mmlu-thinking-v2", "mmlu-general-thinking-v3", "mmlu-general-thinking-v4")
         and stage in ("atomize", "review_dag")
     ):
         # The public choices ground the final label-to-text mapping, not the answer.
@@ -306,7 +307,7 @@ def validate(stage, value, data, solution_source="independent_generation", *, pr
             allow_reference_code_facts=(prompt_version in ("humaneval-reference-v5", "livecodebench-dag-v1")
                                         and data["question"].get("task_type") in ("humaneval", "livecodebench")),
         )
-        if prompt_version == "mmlu-general-thinking-v3":
+        if prompt_version in ("mmlu-general-thinking-v3", "mmlu-general-thinking-v4"):
             for node in value["nodes"]:
                 field = node["source_field"]
                 if field.startswith("choice_"):
@@ -325,7 +326,7 @@ def validate(stage, value, data, solution_source="independent_generation", *, pr
     elif stage == "dependencies":
         validate_parents(
             value, data["nodes"],
-            reject_transitive=prompt_version in ("mmlu-thinking-v2", "gsm8k-v2"),
+            reject_transitive=prompt_version in ("mmlu-thinking-v2", "mmlu-general-thinking-v4", "gsm8k-v2"),
         )
     elif stage == "justify":
         validate_justifications(value, data["nodes"])
