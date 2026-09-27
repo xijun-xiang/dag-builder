@@ -28,7 +28,7 @@ REFERENCE_STAGES = STAGES[1:]
 REPAIR_STAGES = ("repair", "justify", "review_repair")
 REVISION_STAGES = ("revise", "audit", "adjudicate")
 MMLU_NATIVE_VERSIONS = (
-    "mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1", "mmlu-general-thinking-v2",
+    "mmlu-thinking-v1", "mmlu-thinking-v2", "mmlu-general-thinking-v1", "mmlu-general-thinking-v2", "mmlu-general-thinking-v3",
 )
 V2_STAGE_TOKEN_CAPS = {
     "structure_solution": 2048,
@@ -129,6 +129,7 @@ def prompt(
         "mmlu-thinking-v1": ("v1",),
         "mmlu-thinking-v2": ("mmlu-thinking-v1", "v1"),
         "mmlu-general-thinking-v2": ("mmlu-general-thinking-v1",),
+        "mmlu-general-thinking-v3": ("mmlu-general-thinking-v2", "mmlu-general-thinking-v1"),
         "gsm8k-v2": ("gsm8k-v1",),
     }.get(version, ())
     for fallback in fallback_versions:
@@ -191,7 +192,7 @@ def stage_input(
         }
     elif (
         item.get("task_type") == "mmlu"
-        and prompt_version == "mmlu-thinking-v2"
+        and prompt_version in ("mmlu-thinking-v2", "mmlu-general-thinking-v3")
         and stage in ("atomize", "review_dag")
     ):
         # The public choices ground the final label-to-text mapping, not the answer.
@@ -305,6 +306,16 @@ def validate(stage, value, data, solution_source="independent_generation", *, pr
             allow_reference_code_facts=(prompt_version in ("humaneval-reference-v5", "livecodebench-dag-v1")
                                         and data["question"].get("task_type") in ("humaneval", "livecodebench")),
         )
+        if prompt_version == "mmlu-general-thinking-v3":
+            for node in value["nodes"]:
+                field = node["source_field"]
+                if field.startswith("choice_"):
+                    require(node is value["nodes"][-1] and node["kind"] == "answer",
+                            "an option is a candidate answer, not a factual premise")
+                    require(field == "choice_" + data["solution"]["answer"],
+                            "terminal option source must match the solved answer")
+                if node["kind"] == "given":
+                    require(field == "question", "a stated given must cite the question")
         if data["question"].get("task_type") in ("humaneval", "livecodebench"):
             require(value["nodes"][-1]["statement"] == data["reference_code"],
                     "terminal answer must preserve reference completion verbatim")

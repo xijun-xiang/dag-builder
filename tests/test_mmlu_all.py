@@ -14,7 +14,7 @@ from dag_builder.mmlu_campaign import prepare_all, run_all
 from dag_builder.mmlu_catalog import MMLU_SUBJECTS
 from dag_builder.mmlu_export import export_subject, export_campaign
 from dag_builder.source import normalize, select
-from dag_builder.stages import THINKING_STAGES, payload, prompt, stages_for
+from dag_builder.stages import THINKING_STAGES, payload, prompt, stages_for, stage_input, validate
 from dag_builder.storage import digest, read_json, write_once
 from dag_builder.unified import convert_record
 from test_builder import DAG_REVIEW, JUSTIFICATIONS, NODES, PARENTS, REVIEW, SOLUTION
@@ -49,6 +49,34 @@ class MMLUAllTests(unittest.TestCase):
             else:
                 self.assertEqual(prompt(stage, old.prompt_version),
                                  prompt(stage, new.prompt_version))
+
+    def test_v3_quotes_selected_option_without_treating_options_as_facts(self):
+        version = "mmlu-general-thinking-v3"
+        config = Config(prompt_version=version, thinking="enabled")
+        self.assertEqual(stages_for(config), THINKING_STAGES)
+        for stage in THINKING_STAGES:
+            if stage != "atomize":
+                self.assertEqual(prompt(stage, version),
+                                 prompt(stage, "mmlu-general-thinking-v2"))
+        item = {"task_type": "mmlu", "question": "The rule is written in the stem.",
+                "choices": ("wrong A", "wrong B", "correct C", "wrong D"),
+                "gold_answer": "C"}
+        data = stage_input("atomize", item, {"structure_solution": {
+            "answer": "C", "rationale": "The rule implies C."}},
+            prompt_version=version)
+        self.assertEqual(data["reference_sources"]["choice_C"], "correct C")
+        nodes = {"nodes": [
+            {"node_id": 1, "kind": "given", "statement": "The rule is written in the stem.",
+             "source_field": "question", "source_quote": "The rule is written in the stem."},
+            {"node_id": 2, "kind": "answer", "statement": "C: correct C",
+             "source_field": "choice_C", "source_quote": "correct C"},
+        ]}
+        validate("atomize", nodes, data, prompt_version=version)
+        bad = deepcopy(nodes)
+        bad["nodes"][0]["source_field"] = "choice_C"
+        bad["nodes"][0]["source_quote"] = "correct C"
+        with self.assertRaisesRegex(ValueError, "candidate answer"):
+            validate("atomize", bad, data, prompt_version=version)
 
     def test_standalone_pals_reader_has_the_same_subject_set(self):
         location = Path(__file__).resolve().parents[1] / "pals-validation" / "src"
