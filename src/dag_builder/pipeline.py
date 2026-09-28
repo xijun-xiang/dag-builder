@@ -295,7 +295,15 @@ class Pipeline:
                     saved = read_json(attempt / "error.json")
                     if self.retry_safe_failures and saved["category"] == "authentication":
                         continue
-                    if saved["category"] not in transient:
+                    # A prior invocation may have reserved an attempt just before
+                    # its stop signal cancelled the queued transport. Only a new
+                    # invocation may advance past that recorded pause; the old
+                    # reservation remains charged and the four-attempt cap holds.
+                    prior_queued_pause = (
+                        saved["category"] == "paused"
+                        and saved.get("transport_kind") is None
+                    )
+                    if saved["category"] not in transient and not prior_queued_pause:
                         raise CallFailure(saved["category"], saved.get("http_status"))
                 # A request without response/error is also unknown, not free.
                 continue

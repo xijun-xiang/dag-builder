@@ -455,6 +455,35 @@ class BuilderTests(unittest.TestCase):
             (error_file.parent.parent / "attempt-01/response.json").exists()
         )
 
+    def test_resilient_new_invocation_recovers_recorded_queued_pause(self):
+        config = Config(workers=1)
+        stage_dir = self.root / "items" / self.item["item_id"] / "solve"
+        attempt = stage_dir / "attempt-00"
+        request_payload = payload("solve", stage_input("solve", self.item, {}), config)
+        write_once(attempt / "request.json", {
+            "started_at": "2026-09-28T00:00:00+00:00",
+            "payload": request_payload,
+            "reserved_tokens": 10000,
+        })
+        write_once(attempt / "error.json", {
+            "ended_at": "2026-09-28T00:00:01+00:00",
+            "category": "paused",
+            "http_status": None,
+            "transport_kind": None,
+        })
+        original_request = (attempt / "request.json").read_bytes()
+        original_error = (attempt / "error.json").read_bytes()
+        good = FakeClient()
+        runner = Pipeline(self.root, config, good, resilient=True)
+        with patch.object(runner._stop, "wait", return_value=False) as wait:
+            result = runner.run()
+        self.assertEqual(result["results"][0]["status"], "model_accepted")
+        self.assertEqual(result["attempt_count"], 7)
+        self.assertEqual((attempt / "request.json").read_bytes(), original_request)
+        self.assertEqual((attempt / "error.json").read_bytes(), original_error)
+        self.assertTrue((stage_dir / "attempt-01/response.json").exists())
+        wait.assert_called_once_with(10)
+
     def test_resilient_exhausts_per_stage_not_whole_batch_or_resume_budget(self):
         client = FakeClient(failure=CallFailure("uncertain_remote_state"))
         runner = Pipeline(self.root, Config(workers=1), client, resilient=True)
