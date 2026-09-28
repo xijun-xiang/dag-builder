@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--key-file", type=Path, required=True)
     parser.add_argument("--max-total-calls", type=int, required=True)
     parser.add_argument("--max-total-reserved-tokens", type=int, required=True)
+    parser.add_argument("--runtime-workers", type=int,
+                        help="Execution-only concurrency (1..32); frozen task protocol is unchanged")
     args = parser.parse_args()
 
     base = Config.load(args.config)
@@ -51,7 +53,7 @@ def main():
                          max_reserved_tokens=50_000 * calls)
         result = run_all(args.root, config, APIClient(config, key), [subject],
                          args.max_total_calls, args.max_total_reserved_tokens,
-                         resilient=True)
+                         resilient=True, runtime_workers=args.runtime_workers)
         print(json.dumps({"event": "subject_complete", "subject": subject,
                           "result": result["subjects_run"][subject]},
                          ensure_ascii=False), flush=True)

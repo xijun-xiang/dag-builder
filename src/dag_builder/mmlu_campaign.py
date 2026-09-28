@@ -44,17 +44,17 @@ def prepare_all(root, revision, split="test", count_per_subject=None,
 
 def run_all(root, config, client, subjects, max_total_calls,
             max_total_reserved_tokens, limit_per_subject=None, resilient=False,
-            progress=None):
+            progress=None, runtime_workers=None):
     """Sequential paid execution with an explicit worst-case campaign ceiling."""
     with run_lock(root):
         return _run_all_locked(root, config, client, subjects, max_total_calls,
                                max_total_reserved_tokens, limit_per_subject,
-                               resilient, progress)
+                               resilient, progress, runtime_workers)
 
 
 def _run_all_locked(root, config, client, subjects, max_total_calls,
                     max_total_reserved_tokens, limit_per_subject, resilient,
-                    progress):
+                    progress, runtime_workers):
     from .pipeline import Pipeline
 
     root = Path(root)
@@ -79,6 +79,9 @@ def _run_all_locked(root, config, client, subjects, max_total_calls,
     if limit_per_subject is not None and (type(limit_per_subject) is not int
                                           or limit_per_subject <= 0):
         raise ValueError("limit_per_subject must be positive")
+    if runtime_workers is not None and (type(runtime_workers) is not int
+                                        or not 1 <= runtime_workers <= 32):
+        raise ValueError("runtime_workers must be in 1..32")
     for subject in subjects:
         source_root = root / "subjects" / subject
         if read_json(source_root / "selection.json") != manifest["subjects"][subject]:
@@ -109,7 +112,7 @@ def _run_all_locked(root, config, client, subjects, max_total_calls,
     results = {}
     for subject in subjects:
         runner = Pipeline(root / "subjects" / subject, config, client,
-                          resilient=resilient)
+                          resilient=resilient, runtime_workers=runtime_workers)
         snapshot = runner.run(limit_per_subject,
                               progress=(lambda row, name=subject: progress({"subject": name, **row}))
                               if progress else None)

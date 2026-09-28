@@ -277,9 +277,12 @@ class MMLUAllTests(unittest.TestCase):
                     "paused": False, "attempt_count": 0, "reserved_tokens": 0,
                     "results": [{"status": "model_accepted"}]}
                 result = run_all(root, config, object(), ["econometrics", "formal_logic"],
-                                 120, 6000000, limit_per_subject=1)
+                                 120, 6000000, limit_per_subject=1,
+                                 runtime_workers=32)
                 self.assertFalse(result["paused"])
                 self.assertEqual(runner.call_count, 2)
+                self.assertTrue(all(call.kwargs["runtime_workers"] == 32
+                                    for call in runner.call_args_list))
 
     def test_mmlu_export_is_source_bound_and_keeps_all_outcomes(self):
         with tempfile.TemporaryDirectory() as temp:
