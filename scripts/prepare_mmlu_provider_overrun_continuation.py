@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -17,15 +18,31 @@ from dag_builder.provider_overrun import POLICY
 from dag_builder.response_contract import check_response, reported_tokens
 from dag_builder.storage import private_dir, read_json, write_once
 
-from prepare_mmlu_contract_omission_continuation import copy_private, sha256, source_files
-
-
 COUNTS = (39971, 39824, 109, 38, 1501423422)
 LAW_STATUS = {"model_accepted": 223, "needs_review": 519, "rejected": 248,
               "infrastructure_omitted": 1, "paused": 543}
 SECOND_ITEM = "84e63503b744a2d5d40e"
 SECOND_REQUEST_SHA = "47e549d27f6cd12714e6549ea2d00073c9631b3c98c3f9b3bacd1a41821265b2"
 SECOND_RESPONSE_SHA = "049e3b4c369b6ecd8b77835333e069da7fd4b8ab187315f6f54ce037bf7ad9f8"
+
+
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def source_files(package):
+    return {str(path.relative_to(package)): sha256(path)
+            for path in sorted(package.rglob("*")) if path.suffix in (".py", ".md")}
+
+
+def copy_private(source, destination):
+    private_dir(destination.parent)
+    if source.is_symlink() or not source.is_file() or destination.exists():
+        raise ValueError("unsafe or duplicate continuation file")
+    shutil.copyfile(source, destination)
+    destination.chmod(0o600)
+    if sha256(source) != sha256(destination):
+        raise ValueError("continuation copy mismatch")
 
 
 def audit(source, log, repository, expected_commit):
