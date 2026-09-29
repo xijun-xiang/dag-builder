@@ -13,6 +13,8 @@ from pathlib import Path
 
 from .client import CallFailure
 from .operator_omission import is_omitted_attempt, load_operator_omission
+from .provider_overrun import (ProviderOverrunOmission, eligible_provider_overrun,
+                               load_provider_overrun_policy, record_provider_overrun)
 from .response_contract import check_response
 from .math_answers import numeric_answers_equivalent
 from .run_status import record_pause
@@ -110,6 +112,7 @@ class Pipeline:
             raise ValueError("operator omission is MMLU-only")
         self.operator_omission = (load_operator_omission(self.root)
                                   if config.task_type == "mmlu" else None)
+        self.provider_overrun_policy = load_provider_overrun_policy(self.root, config)
         self.config, self.client = config, client
         self.retry_safe_failures = retry_safe_failures
         self.isolate_uncertain_failures = isolate_uncertain_failures
@@ -170,6 +173,12 @@ class Pipeline:
             strict=self.config.strict_response_contract,
             content_gated=self.config.content_gated_response,
         )
+        explicit_omission = is_omitted_attempt(
+            self.root, self.operator_omission, attempt
+        )
+        provider_omission = (not explicit_omission and eligible_provider_overrun(
+            self.provider_overrun_policy, request, response, check
+        ))
         with self._budget_lock:
             if attempt not in self._accounted_responses:
                 overage = check["accounted_tokens"] - request["reserved_tokens"]
@@ -178,17 +187,17 @@ class Pipeline:
                 self._accounted_responses.add(attempt)
             if self.accounted_tokens > self.config.max_reserved_tokens:
                 self._stop.set()
-            if check["violations"] and not is_omitted_attempt(
-                self.root, self.operator_omission, attempt
-            ):
+            if check["violations"] and not (explicit_omission or provider_omission):
                 self._contract_violations.add(str(attempt.relative_to(self.root)))
                 self._stop.set()
         if check["violations"] or self.config.content_gated_response:
             filename = "contract_check-v2.json" if self.config.content_gated_response else "contract_check-v1.json"
             write_once(attempt / filename, check)
-        if check["violations"] and not is_omitted_attempt(
-            self.root, self.operator_omission, attempt
-        ):
+        if provider_omission:
+            record_provider_overrun(attempt, self.provider_overrun_policy, check)
+            if raise_failure:
+                raise ProviderOverrunOmission(str(attempt.relative_to(self.root)))
+        if check["violations"] and not (explicit_omission or provider_omission):
             if raise_failure:
                 raise CallFailure("response_contract_violation")
         return response
@@ -588,6 +597,11 @@ class Pipeline:
             )
         except InvalidOutput as error:
             return self._finish(item, "needs_review", current, str(error))
+        except ProviderOverrunOmission:
+            return self._finish(
+                item, "infrastructure_omitted", current,
+                "provider completion exceeded requested cap and token reservation",
+            )
         except CallFailure as error:
             isolated = (
                 self.resilient and error.category == "transient_retries_exhausted"

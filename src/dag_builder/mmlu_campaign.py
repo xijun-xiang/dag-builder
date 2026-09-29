@@ -4,7 +4,8 @@ from pathlib import Path
 
 from .mmlu_catalog import MMLU_SUBJECTS
 from .operator_omission import is_omitted_attempt, load_operator_omission
-from .response_contract import reported_tokens
+from .provider_overrun import eligible_provider_overrun, load_provider_overrun_policy
+from .response_contract import check_response, reported_tokens
 from .source import prepare
 from .storage import private_dir, read_json, run_lock, write_once
 
@@ -94,6 +95,7 @@ def _run_all_locked(root, config, client, subjects, max_total_calls,
     for subject in campaign_subjects:
         subject_root = root / "subjects" / subject
         omission = load_operator_omission(subject_root)
+        provider_policy = load_provider_overrun_policy(subject_root, config)
         paths = tuple((root / "subjects" / subject).glob("items/*/*/attempt-*/request.json"))
         reservations = [read_json(path).get("reserved_tokens") for path in paths]
         if any(type(value) is not int or value <= 0 for value in reservations):
@@ -101,10 +103,16 @@ def _run_all_locked(root, config, client, subjects, max_total_calls,
         accounted = []
         for path, reservation in zip(paths, reservations):
             response_path = path.parent / "response.json"
-            reported = (reported_tokens(read_json(response_path)["body"])
-                        if response_path.is_file() else 0)
+            response = read_json(response_path)["body"] if response_path.is_file() else None
+            reported = reported_tokens(response) if response is not None else 0
             if (reported > reservation
-                    and not is_omitted_attempt(subject_root, omission, path.parent)):
+                    and not is_omitted_attempt(subject_root, omission, path.parent)
+                    and not eligible_provider_overrun(
+                        provider_policy, read_json(path), response,
+                        check_response(read_json(path)["payload"], response, reservation,
+                                       strict=config.strict_response_contract,
+                                       content_gated=config.content_gated_response),
+                    )):
                 raise ValueError("historical response exceeded its token reservation; audit required")
             accounted.append(max(reservation, reported))
         history[subject] = (len(paths), sum(accounted))
