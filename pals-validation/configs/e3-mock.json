@@ -1,0 +1,45 @@
+{
+  "schema_version": "pals_e3_config_v1",
+  "backend": "mock",
+  "protocol_version": "native-trace-v1",
+  "prompt_version": "native-trace-prompt-v1",
+  "parser_version": "strict-tag-v1",
+  "scoring_version": "adjacent-deletion-explicit-boundary-v1",
+  "model": {
+    "id": "Qwen2.5-7B-Instruct",
+    "path": "SYNTHETIC_NO_MODEL",
+    "revision": "synthetic-v1",
+    "files_manifest": "SYNTHETIC_NO_MODEL"
+  },
+  "hf_runtime": {
+    "dtype": "bfloat16",
+    "attention": "sdpa",
+    "max_context": 32768,
+    "cpu_threads": 4,
+    "chat_template_kwargs": {},
+    "runtime_versions": {},
+    "reviewed_local_code": null
+  },
+  "generation": {
+    "samples_per_question": 1,
+    "temperature": 0.7,
+    "top_p": 1.0,
+    "top_k": 0,
+    "repetition_penalty": 1.0,
+    "num_beams": 1,
+    "do_sample": true,
+    "batch_size": 8,
+    "max_new_tokens": {"knowledge_math": 8192, "code": 16384},
+    "master_seed": 2026092903
+  },
+  "scoring": {"temperature": 1.0, "target_batch_size": 1},
+  "common_scorer": {
+    "model_id": "Qwen3-14B",
+    "fraction": 0.1,
+    "rounding": "ceil",
+    "selection_seed": 2026092903
+  },
+  "execution": {"shards": 8, "automatic_generation_retries": 0},
+  "evaluation_manifest": "SYNTHETIC_NO_EVALUATOR",
+  "analysis": {"bootstrap_draws": 5000, "bootstrap_seed": 2026092903}
+}

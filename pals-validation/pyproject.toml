@@ -11,9 +11,11 @@ dependencies = []
 
 [project.optional-dependencies]
 inference = ["torch>=2.4,<3", "transformers>=4.46,<6", "accelerate>=1,<2", "sentencepiece>=0.2"]
+e3-source = ["pyarrow>=15,<30"]
 
 [project.scripts]
 pals-validation = "pals_validation.cli:main"
+pals-e3 = "pals_validation.e3.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
