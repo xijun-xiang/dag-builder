@@ -19,7 +19,7 @@ from dag_builder.storage import private_dir, read_json, write_once
 
 MAX_CALLS = 66273
 MAX_RESERVED = 3313650000
-EXPECTED_COUNTS = (39515, 39368, 109, 38, 1481525805)
+EXPECTED_COUNTS = (39515, 39368, 109, 38, 1481520701)
 LAW_COUNTS = {"model_accepted": 201, "needs_review": 474,
               "rejected": 227, "paused": 632}
 
