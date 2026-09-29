@@ -5,12 +5,20 @@ import json
 import pickle
 import unittest
 import zlib
+from pathlib import Path
 
 from pals_validation.e3.code_harness import UnsupportedCode, equal_lcb, static_check
 from pals_validation.e3.code_tests import decode_lcb_tests
 
 
 class CodeEvaluationContractTests(unittest.TestCase):
+    def test_cpu_job_can_read_frozen_policy(self):
+        script = (Path(__file__).resolve().parents[1] / "scripts" /
+                  "b1-e3-cpu.sbatch").read_text(encoding="utf-8")
+        policy_mount = ("/work/projects/polyullm/xxj/PALS/configs/e3:"
+                        "/work/projects/polyullm/xxj/PALS/configs/e3:ro")
+        self.assertIn(policy_mount, script)
+
     def test_official_style_lcb_comparison(self):
         self.assertTrue(equal_lcb("1.00 2\n", "1 2.0\n", "stdin"))
         self.assertFalse(equal_lcb("1.01\n", "1\n", "stdin"))

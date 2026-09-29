@@ -26,7 +26,7 @@ export ENROOT_RUNTIME_PATH="$PALS_RUN/scratch/enroot-runtime"
 mkdir -p "$ENROOT_CACHE_PATH" "$ENROOT_DATA_PATH" "$ENROOT_RUNTIME_PATH" "$PALS_RUN/logs"
 cd "$PALS_RUN"
 srun --container-image=/lustre/projects/polyullm/container/lmsysorg+sglang+v0.5.12+infix+v6.sqsh \
-  --container-mounts="$PALS_REPO:$PALS_REPO:ro,$PALS_RUN:$PALS_RUN:rw" \
+  --container-mounts="$PALS_REPO:$PALS_REPO:ro,/work/projects/polyullm/xxj/PALS/configs/e3:/work/projects/polyullm/xxj/PALS/configs/e3:ro,$PALS_RUN:$PALS_RUN:rw" \
   --container-workdir="$PALS_RUN" --container-remap-root --no-container-mount-home \
   bash -c '
 set -euo pipefail
