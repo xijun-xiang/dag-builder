@@ -13,6 +13,7 @@ from dag_builder.config import Config
 from dag_builder.mmlu_campaign import prepare_all, run_all
 from dag_builder.mmlu_catalog import MMLU_SUBJECTS
 from dag_builder.mmlu_export import export_subject, export_campaign
+from dag_builder.pipeline import Pipeline
 from dag_builder.source import normalize, select
 from dag_builder.stages import THINKING_STAGES, payload, prompt, stages_for, stage_input, validate
 from dag_builder.storage import digest, read_json, write_once
@@ -278,11 +279,25 @@ class MMLUAllTests(unittest.TestCase):
                     "results": [{"status": "model_accepted"}]}
                 result = run_all(root, config, object(), ["econometrics", "formal_logic"],
                                  120, 6000000, limit_per_subject=1,
-                                 runtime_workers=32)
+                                 runtime_workers=64)
                 self.assertFalse(result["paused"])
                 self.assertEqual(runner.call_count, 2)
-                self.assertTrue(all(call.kwargs["runtime_workers"] == 32
+                self.assertTrue(all(call.kwargs["runtime_workers"] == 64
                                     for call in runner.call_args_list))
+                with self.assertRaisesRegex(ValueError, "1..64"):
+                    run_all(root, config, object(), ["econometrics"],
+                            120, 6000000, runtime_workers=65)
+
+    def test_mmlu_runtime_concurrency_64_does_not_change_frozen_worker_count(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            config = Config(prompt_version="mmlu-general-thinking-v4",
+                            thinking="enabled", workers=6)
+            runner = Pipeline(root, config, object(), runtime_workers=64)
+            self.assertEqual(config.workers, 6)
+            self.assertEqual(runner.runtime_workers, 64)
+            with self.assertRaisesRegex(ValueError, "runtime worker count"):
+                Pipeline(root, config, object(), runtime_workers=65)
 
     def test_mmlu_export_is_source_bound_and_keeps_all_outcomes(self):
         with tempfile.TemporaryDirectory() as temp:

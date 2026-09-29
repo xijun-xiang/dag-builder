@@ -112,8 +112,10 @@ class Pipeline:
                 "resilient mode cannot be combined with legacy retry flags"
             )
         self.resilient = resilient
+        runtime_worker_limit = 64 if config.task_type == "mmlu" else 32
         if runtime_workers is not None and (
-            type(runtime_workers) is not int or not 1 <= runtime_workers <= 32
+            type(runtime_workers) is not int
+            or not 1 <= runtime_workers <= runtime_worker_limit
         ):
             raise ValueError("invalid runtime worker count")
         self.runtime_workers = runtime_workers or config.workers

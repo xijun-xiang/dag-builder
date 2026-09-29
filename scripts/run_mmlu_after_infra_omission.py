@@ -24,10 +24,15 @@ def preflight(root, config_path, max_calls, max_reserved):
     manifest = read_json(root / "campaign_manifest.json")
     config = Config.load(config_path)
     subjects = list(manifest["subjects"])
+    completed_after_omission = proof.get("completed_after_omission", [])
+    if (not isinstance(completed_after_omission, list)
+            or completed_after_omission != subjects[21:21 + len(completed_after_omission)]):
+        raise ValueError("post-omission completed-subject list changed")
+    next_index = 21 + len(completed_after_omission)
     if (manifest["subject_count"] != 27 or manifest["selected_count"] != 7888
             or subjects[:20] != proof["completed_subjects"]
             or subjects[20] != proof["omitted_subject"] == "prehistory"
-            or subjects[21:] != proof["remaining_subjects"]
+            or subjects[next_index:] != proof["remaining_subjects"]
             or set(proof["omitted_item_stages"]) !=
             {"ae625427c20fc16ccd62", "d3e6291ba7fa6f175676",
              "d3e998612e060c4a093d"}
@@ -44,13 +49,17 @@ def preflight(root, config_path, max_calls, max_reserved):
         if (len(list((root / "subjects" / subject).glob("items/*/result.json")))
                 != manifest["subjects"][subject]["selected_count"]):
             raise ValueError("completed subject changed")
+    for subject in completed_after_omission:
+        if (len(list((root / "subjects" / subject).glob("items/*/result.json")))
+                != manifest["subjects"][subject]["selected_count"]):
+            raise ValueError("post-omission completed subject changed")
     if len(list((root / "subjects/prehistory").glob("items/*/result.json"))) != 320:
         raise ValueError("omitted subject changed")
     planned_calls = sum(math.ceil(7 * row["selected_count"] * 1.2)
                         for row in manifest["subjects"].values())
     if planned_calls > max_calls or 50000 * planned_calls > max_reserved:
         raise ValueError("budget does not cover subject-local caps")
-    return config, manifest, subjects[21:]
+    return config, manifest, subjects[next_index:]
 
 
 def main():
@@ -64,8 +73,8 @@ def main():
     parser.add_argument("--runtime-workers", type=int, default=32)
     parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
-    if args.runtime_workers != 32:
-        raise ValueError("execution concurrency must remain 32")
+    if args.runtime_workers not in (32, 64):
+        raise ValueError("execution concurrency must be 32 or 64")
     base, manifest, subjects = preflight(args.root, args.config,
                                          args.max_total_calls,
                                          args.max_total_reserved_tokens)

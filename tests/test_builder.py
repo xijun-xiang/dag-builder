@@ -798,6 +798,13 @@ class BuilderTests(unittest.TestCase):
                 self.root,
                 Config(workers=1),
                 FakeClient(),
+                runtime_workers=65,
+            )
+        with self.assertRaises(ValueError):
+            Pipeline(
+                self.root,
+                Config(task_type="gpqa", workers=1),
+                FakeClient(),
                 runtime_workers=33,
             )
 

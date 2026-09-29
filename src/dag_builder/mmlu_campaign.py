@@ -80,8 +80,8 @@ def _run_all_locked(root, config, client, subjects, max_total_calls,
                                           or limit_per_subject <= 0):
         raise ValueError("limit_per_subject must be positive")
     if runtime_workers is not None and (type(runtime_workers) is not int
-                                        or not 1 <= runtime_workers <= 32):
-        raise ValueError("runtime_workers must be in 1..32")
+                                        or not 1 <= runtime_workers <= 64):
+        raise ValueError("runtime_workers must be in 1..64")
     for subject in subjects:
         source_root = root / "subjects" / subject
         if read_json(source_root / "selection.json") != manifest["subjects"][subject]:
