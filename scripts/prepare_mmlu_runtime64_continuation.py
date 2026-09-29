@@ -172,6 +172,7 @@ def prepare(source, destination, log, repository, expected_commit):
             if (not path.is_file() or path.name in (".lock", "operator-stop-request.json",
                                                     "launchd-mmlu27.plist")
                     or relative == Path("subjects/professional_law/implementation.json")
+                    or relative == Path("infra_omission_continuation_provenance.json")
                     or relative.parts[0] == "code"
                     or "__pycache__" in path.parts):
                 continue
@@ -192,7 +193,8 @@ def prepare(source, destination, log, repository, expected_commit):
         proof["copied_tree_manifest_sha256"] = digest.hexdigest()
         proof["exclusions"] = ["run lock", "operator stop marker", "old launchd configuration",
                                 "old code snapshot", "Python bytecode cache",
-                                "unstarted law subject's 32-worker implementation record"]
+                                "unstarted law subject's 32-worker implementation record",
+                                "prior continuation provenance superseded by this one"]
         write_once(destination / "infra_omission_continuation_provenance.json", proof)
         return proof
 
