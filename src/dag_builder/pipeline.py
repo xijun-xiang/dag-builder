@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .client import CallFailure
+from .operator_omission import is_omitted_attempt, load_operator_omission
 from .response_contract import check_response
 from .math_answers import numeric_answers_equivalent
 from .run_status import record_pause
@@ -104,6 +105,11 @@ class Pipeline:
         self.root = private_dir(root)
         if type(self) is Pipeline and (self.root / "recovery_manifest.json").exists():
             raise ValueError("recovery cohort requires HumanEvalRecoveryPipeline")
+        omission_path = self.root / "operator_infrastructure_omission.json"
+        if omission_path.exists() and config.task_type != "mmlu":
+            raise ValueError("operator omission is MMLU-only")
+        self.operator_omission = (load_operator_omission(self.root)
+                                  if config.task_type == "mmlu" else None)
         self.config, self.client = config, client
         self.retry_safe_failures = retry_safe_failures
         self.isolate_uncertain_failures = isolate_uncertain_failures
@@ -172,13 +178,17 @@ class Pipeline:
                 self._accounted_responses.add(attempt)
             if self.accounted_tokens > self.config.max_reserved_tokens:
                 self._stop.set()
-            if check["violations"]:
+            if check["violations"] and not is_omitted_attempt(
+                self.root, self.operator_omission, attempt
+            ):
                 self._contract_violations.add(str(attempt.relative_to(self.root)))
                 self._stop.set()
         if check["violations"] or self.config.content_gated_response:
             filename = "contract_check-v2.json" if self.config.content_gated_response else "contract_check-v1.json"
             write_once(attempt / filename, check)
-        if check["violations"]:
+        if check["violations"] and not is_omitted_attempt(
+            self.root, self.operator_omission, attempt
+        ):
             if raise_failure:
                 raise CallFailure("response_contract_violation")
         return response
@@ -454,6 +464,12 @@ class Pipeline:
 
     def process(self, item, through="review_dag"):
         item_dir = self.root / "items" / item["item_id"]
+        if (self.operator_omission is not None
+                and item["item_id"] == self.operator_omission["item_id"]):
+            return self._finish(
+                item, "infrastructure_omitted", self.operator_omission["stage"],
+                "operator-authorized omission of one hash-bound provider overrun",
+            )
         results = {}
         current = stages_for(self.config)[0]
         try:

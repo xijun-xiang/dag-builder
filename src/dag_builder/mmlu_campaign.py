@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from .mmlu_catalog import MMLU_SUBJECTS
+from .operator_omission import is_omitted_attempt, load_operator_omission
 from .response_contract import reported_tokens
 from .source import prepare
 from .storage import private_dir, read_json, run_lock, write_once
@@ -91,16 +92,22 @@ def _run_all_locked(root, config, client, subjects, max_total_calls,
     # campaign-wide ceiling by selecting a different slice.
     history = {}
     for subject in campaign_subjects:
+        subject_root = root / "subjects" / subject
+        omission = load_operator_omission(subject_root)
         paths = tuple((root / "subjects" / subject).glob("items/*/*/attempt-*/request.json"))
         reservations = [read_json(path).get("reserved_tokens") for path in paths]
         if any(type(value) is not int or value <= 0 for value in reservations):
             raise ValueError("invalid historical API reservation")
+        accounted = []
         for path, reservation in zip(paths, reservations):
             response_path = path.parent / "response.json"
-            if (response_path.is_file()
-                    and reported_tokens(read_json(response_path)["body"]) > reservation):
+            reported = (reported_tokens(read_json(response_path)["body"])
+                        if response_path.is_file() else 0)
+            if (reported > reservation
+                    and not is_omitted_attempt(subject_root, omission, path.parent)):
                 raise ValueError("historical response exceeded its token reservation; audit required")
-        history[subject] = (len(paths), sum(reservations))
+            accounted.append(max(reservation, reported))
+        history[subject] = (len(paths), sum(accounted))
     max_possible_calls = (sum(row[0] for row in history.values())
                           + sum(max(0, config.max_calls - history[subject][0])
                                 for subject in subjects))
