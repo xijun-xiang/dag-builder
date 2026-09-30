@@ -13,6 +13,18 @@ SYSTEM_PROMPT = (
     "steps. Then put the final answer inside one <answer>...</answer> block. "
     "Do not write text outside these blocks. Stop after </answer>."
 )
+SYSTEM_PROMPT_V2 = (
+    "Solve the task and return only tagged blocks. The following syntax uses "
+    "placeholders; replace them with your own reasoning and answer:\n"
+    "<step>[one coherent reasoning step]</step>\n"
+    "<step>[another substantive step, if needed]</step>\n"
+    "<answer>[the final answer]</answer>\n"
+    "The first characters of your response must be <step>. Put every reasoning "
+    "sentence inside a <step> block; use as many substantive steps as needed. "
+    "After the reasoning, write exactly one <answer> block and end immediately "
+    "after </answer>. Do not use a preface, headings, numbering outside the "
+    "blocks, Markdown code fences, or any text outside the blocks."
+)
 SUFFIX = {
     "gpqa": "In <answer>, write only the chosen option label.",
     "mmlu": "In <answer>, write only the chosen option label.",
@@ -26,8 +38,10 @@ ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 TAGS = ("<step>", "</step>", "<answer>", "</answer>")
 
 
-def messages(problem: dict) -> list[dict]:
+def messages(problem: dict, prompt_version: str = "native-trace-prompt-v1") -> list[dict]:
     validate_problem(problem)
+    if prompt_version not in ("native-trace-prompt-v1", "native-trace-prompt-v2"):
+        raise ValueError("Unknown E3 prompt version")
     task = problem["benchmark"]
     question = problem["question"]
     if problem["choices"] is not None:
@@ -40,7 +54,12 @@ def messages(problem: dict) -> list[dict]:
         question += "\n\nPublic examples:\n" + "\n".join(
             f"Input: {case['input']}\nOutput: {case['output']}"
             for case in problem["public_examples"])
-    return [{"role": "system", "content": SYSTEM_PROMPT + " " + SUFFIX[task]},
+    if prompt_version == "native-trace-prompt-v2":
+        question += ("\n\nResponse format reminder: begin with <step>, put all reasoning "
+                     "inside <step> blocks, then give exactly one <answer> block. "
+                     "Do not use Markdown fences or any text outside the tags.")
+    system = SYSTEM_PROMPT_V2 if prompt_version == "native-trace-prompt-v2" else SYSTEM_PROMPT
+    return [{"role": "system", "content": system + " " + SUFFIX[task]},
             {"role": "user", "content": question}]
 
 

@@ -60,8 +60,9 @@ def _score_matches(saved: dict, parsed: dict, base: str, encode) -> None:
 
 
 def _expected_worker_completion(run: Path, protocol: dict, batches: list[dict],
-                                stage: str, shards: int, canary: bool = False) -> None:
-    canary_ids = canary_batches(batches) if canary else None
+                                stage: str, shards: int, canary: bool = False,
+                                canary_index: int = 0) -> None:
+    canary_ids = canary_batches(batches, canary_index) if canary else None
     for shard in range(shards):
         selected = [batch for index, batch in enumerate(batches)
                     if index % shards == shard and
@@ -81,14 +82,15 @@ def audit_run(run: str | Path, stage: str, output: str | Path) -> dict:
     encode = token_encoder(config) if stage in ("score", "all", "canary") else None
     shards = config["execution"]["shards"]
     canary = stage == "canary"
+    canary_index = config.get("canary_batch_index", 0)
     required = ("generate",) if stage == "generate" else (
         ("generate", "score") if stage == "score" else
         ("generate", "evaluate") if stage == "evaluate" else
         ("generate", "score", "evaluate"))
     for name in required:
-        _expected_worker_completion(run, protocol, batches, name, shards, canary)
+        _expected_worker_completion(run, protocol, batches, name, shards, canary, canary_index)
     if canary:
-        selected_ids = canary_batches(batches)
+        selected_ids = canary_batches(batches, canary_index)
         batches = [batch for batch in batches if batch["batch_id"] in selected_ids]
     require(not output.exists(), "audit output already exists")
     expected_batch_ids = {batch["batch_id"] for batch in batches}

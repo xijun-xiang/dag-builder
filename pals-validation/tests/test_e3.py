@@ -14,9 +14,9 @@ from pals_validation.e3.evaluate import evaluate_answer
 from pals_validation.e3.fixture import prepare_fixture
 from pals_validation.e3.metrics import summarize_trace
 from pals_validation.e3.protocol import messages, parse_trace, score_text_pair
-from pals_validation.e3.run import init_run, worker
+from pals_validation.e3.run import canary_batches, init_run, validate_config, worker
 from pals_validation.e3.schema import make_problem, validate_problem
-from pals_validation.io import read, save
+from pals_validation.io import read, save, sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +64,12 @@ class MathAndProtocolTests(unittest.TestCase):
         corrupt = {**problem, "reference_answer": "GOLD_UNIQUE_SECRET"}
         with self.assertRaises(ValueError):
             validate_problem(corrupt)
+        v2 = messages(problem, "native-trace-prompt-v2")
+        self.assertIn("first characters", v2[0]["content"])
+        self.assertIn("Response format reminder", v2[1]["content"])
+        self.assertNotIn("GOLD_UNIQUE_SECRET", json.dumps(v2))
+        with self.assertRaisesRegex(ValueError, "prompt version"):
+            messages(problem, "unregistered-prompt")
         answer = {"valid": True, "text": "A", "span": [0, 1]}
         self.assertTrue(evaluate_answer(problem, {"kind": "choice", "value": "A"}, answer)["correct"])
         self.assertIsNone(evaluate_answer(problem, {"kind": "choice", "value": "A",
@@ -94,6 +100,70 @@ class MathAndProtocolTests(unittest.TestCase):
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_v2_selects_only_untouched_second_batches(self):
+        original = read(ROOT / "configs/e3-mock.json")
+        v2 = {**original, "schema_version": "pals_e3_config_v2",
+              "protocol_version": "native-trace-v2",
+              "prompt_version": "native-trace-prompt-v2", "canary_batch_index": 1}
+        validate_config(v2)
+        with self.assertRaisesRegex(ValueError, "fields mismatch"):
+            validate_config({**original, "canary_batch_index": 1})
+        with self.assertRaisesRegex(ValueError, "untouched second batch"):
+            validate_config({**v2, "canary_batch_index": 0})
+        batches = [{"benchmark": benchmark, "batch_id": benchmark + str(index),
+                    "problem_ids": [f"{benchmark}:{index}:{item}" for item in range(8)]}
+                   for benchmark in ("gpqa", "gsm8k", "humaneval", "livecodebench", "mmlu")
+                   for index in range(2)]
+        first, second = canary_batches(batches), canary_batches(batches, 1)
+        self.assertEqual(len(first), 5)
+        self.assertEqual(len(second), 5)
+        self.assertFalse(first & second)
+        with self.assertRaisesRegex(ValueError, "absent or incomplete"):
+            canary_batches(batches[:-1], 1)
+
+    def test_v2_mock_canary_replays_only_second_batches(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prepare_fixture(root / "seed")
+            originals = read(root / "seed" / "problems.json")
+            original_grading = read(root / "seed" / "grading" / "answers.json")
+            prepared = root / "prepared"
+            prepared.mkdir()
+            (prepared / "grading").mkdir()
+            problems, grading = [], {}
+            for problem in originals:
+                for index in range(16):
+                    clone = copy.deepcopy(problem)
+                    clone["problem_id"] = problem["problem_id"].replace("-0", f"-{index:02d}")
+                    clone["source_id"] = clone["problem_id"]
+                    problems.append(clone)
+                    grading[clone["problem_id"]] = original_grading[problem["problem_id"]]
+            save(prepared / "problems.json", problems)
+            save(prepared / "grading" / "answers.json", grading)
+            save(prepared / "common_subset.json", common_subset(problems, 2026092903))
+            manifest = {**read(root / "seed" / "manifest.json"),
+                        "counts": {p["benchmark"]: 16 for p in originals},
+                        "files": {name: sha256(prepared / name) for name in
+                                  ("problems.json", "grading/answers.json", "common_subset.json")}}
+            save(prepared / "manifest.json", manifest)
+            config = {**read(ROOT / "configs/e3-mock.json"),
+                      "schema_version": "pals_e3_config_v2", "protocol_version": "native-trace-v2",
+                      "prompt_version": "native-trace-prompt-v2", "canary_batch_index": 1}
+            save(root / "v2-config.json", config)
+            run = root / "run"
+            init_run(prepared, root / "v2-config.json", run)
+            for stage in ("generate", "score", "evaluate"):
+                for shard in range(8):
+                    worker(run, stage, shard, canary=True)
+            result = audit_run(run, "canary", root / "audit")
+            self.assertEqual(result["counts"]["planned"], 40)
+            self.assertEqual(result["counts"]["complete_process"], 40)
+            batches = read(run / "batches.json")
+            self.assertEqual({path.stem for path in (run / "generation_batches").glob("*.json")},
+                             canary_batches(batches, 1))
+            self.assertFalse({path.stem for path in (run / "generation_batches").glob("*.json")}
+                             & canary_batches(batches))
+
     def _new_run(self, root: Path):
         prepared = root / "prepared"
         prepare_fixture(prepared)

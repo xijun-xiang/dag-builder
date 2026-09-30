@@ -61,6 +61,7 @@ def main() -> None:
     parser.add_argument("--configs", required=True)
     parser.add_argument("--runs", required=True)
     parser.add_argument("--harness-selftest", required=True)
+    parser.add_argument("--protocol-variant", choices=("v1", "v2"), default="v1")
     args = parser.parse_args()
     os.umask(0o077)
     if not os.environ.get("SLURM_JOB_ID"):
@@ -102,7 +103,9 @@ def main() -> None:
                                                    trust_remote_code=False)
         longest = (None, 0)
         for problem in problems:
-            prompt = tokenizer.apply_chat_template(messages(problem), tokenize=False,
+            prompt_version = ("native-trace-prompt-v2" if args.protocol_variant == "v2"
+                              else "native-trace-prompt-v1")
+            prompt = tokenizer.apply_chat_template(messages(problem, prompt_version), tokenize=False,
                                                     add_generation_prompt=True, **kwargs)
             tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
             budget = 16384 if problem["benchmark"] in ("humaneval", "livecodebench") else 8192
@@ -132,8 +135,10 @@ def main() -> None:
         files_path = configs / f"{slot}-model-files.json"
         save(files_path, model_files(model))
         config = {
-            "schema_version": "pals_e3_config_v1", "backend": "hf",
-            "protocol_version": "native-trace-v1", "prompt_version": "native-trace-prompt-v1",
+            "schema_version": "pals_e3_config_v2" if args.protocol_variant == "v2" else "pals_e3_config_v1",
+            "backend": "hf",
+            "protocol_version": "native-trace-v2" if args.protocol_variant == "v2" else "native-trace-v1",
+            "prompt_version": "native-trace-prompt-v2" if args.protocol_variant == "v2" else "native-trace-prompt-v1",
             "parser_version": "strict-tag-v1",
             "scoring_version": "adjacent-deletion-explicit-boundary-v1",
             "model": {"id": model_id, "path": str(model), "revision": revision,
@@ -153,6 +158,8 @@ def main() -> None:
             "execution": {"shards": 8, "automatic_generation_retries": 0},
             "evaluation_manifest": str(configs / "evaluation-policy.json"),
             "analysis": {"bootstrap_draws": 5000, "bootstrap_seed": 2026092903}}
+        if args.protocol_variant == "v2":
+            config["canary_batch_index"] = 1
         config_path = configs / f"{slot}.json"
         save(config_path, config)
         init_run(prepared, config_path, runs / slot)

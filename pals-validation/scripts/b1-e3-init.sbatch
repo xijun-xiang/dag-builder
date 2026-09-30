@@ -17,6 +17,9 @@ umask 077
 : "${PALS_CONFIGS:?}"
 : "${PALS_RUN_ROOT:?}"
 : "${PALS_HARNESS_SELFTEST:?}"
+: "${PALS_PROTOCOL_VARIANT:=v1}"
+case "$PALS_PROTOCOL_VARIANT" in v1|v2) ;; *) exit 64 ;; esac
+export PALS_PROTOCOL_VARIANT
 for path in "$PALS_REPO" "$PALS_PREPARED" "$PALS_MODEL_MATRIX" "$PALS_CONFIGS" "$PALS_RUN_ROOT" "$PALS_HARNESS_SELFTEST"; do
   case "$path" in /work/projects/polyullm/xxj/PALS/*) ;; *) exit 64 ;; esac
   test "$(realpath "$path")" = "$path"
@@ -40,5 +43,5 @@ export TMPDIR="$PALS_RUN_ROOT/scratch/tmp" HF_HOME="$PALS_RUN_ROOT/scratch/hf" H
 mkdir -p "$TMPDIR" "$HF_HOME" "$HF_MODULES_CACHE" "$XDG_CACHE_HOME"
 python3 "$PALS_REPO/scripts/e3_b1_init.py" --prepared "$PALS_PREPARED" \
   --model-matrix "$PALS_MODEL_MATRIX" --configs "$PALS_CONFIGS" --runs "$PALS_RUN_ROOT" \
-  --harness-selftest "$PALS_HARNESS_SELFTEST"
+  --harness-selftest "$PALS_HARNESS_SELFTEST" --protocol-variant "$PALS_PROTOCOL_VARIANT"
 '

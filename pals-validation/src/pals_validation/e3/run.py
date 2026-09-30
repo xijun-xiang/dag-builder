@@ -42,13 +42,22 @@ def _assert_fields(obj: dict, fields: set[str], label: str) -> None:
 
 
 def validate_config(config: dict) -> None:
-    _assert_fields(config, CONFIG_FIELDS, "config")
-    require(config["schema_version"] == "pals_e3_config_v1" and
-            config["protocol_version"] == "native-trace-v1" and
-            config["prompt_version"] == "native-trace-prompt-v1" and
+    variant = config.get("protocol_version")
+    require(variant in ("native-trace-v1", "native-trace-v2"), "unknown protocol version")
+    extra_fields = {"canary_batch_index"} if variant == "native-trace-v2" else set()
+    _assert_fields(config, CONFIG_FIELDS | extra_fields, "config")
+    expected_schema = "pals_e3_config_v2" if variant == "native-trace-v2" else "pals_e3_config_v1"
+    expected_prompt = ("native-trace-prompt-v2" if variant == "native-trace-v2"
+                       else "native-trace-prompt-v1")
+    require(config["schema_version"] == expected_schema and
+            config["prompt_version"] == expected_prompt and
             config["parser_version"] == "strict-tag-v1" and
             config["scoring_version"] == "adjacent-deletion-explicit-boundary-v1",
             "protocol version mismatch")
+    if variant == "native-trace-v2":
+        require(type(config["canary_batch_index"]) is int and
+                config["canary_batch_index"] == 1,
+                "V2 canary must use the untouched second batch")
     require(config["backend"] in ("hf", "mock"), "unknown backend")
     _assert_fields(config["model"], {"id", "path", "revision", "files_manifest"}, "model")
     _assert_fields(config["hf_runtime"], {"dtype", "attention", "max_context", "cpu_threads",
@@ -343,11 +352,15 @@ def _common_score(run: Path, source: Path, source_config: dict, source_batches: 
     return completed
 
 
-def canary_batches(batches: list[dict]) -> set[str]:
-    first = {}
+def canary_batches(batches: list[dict], index: int = 0) -> set[str]:
+    require(type(index) is int and index in (0, 1), "unknown canary batch index")
+    grouped: dict[str, list[dict]] = {}
     for batch in batches:
-        first.setdefault(batch["benchmark"], batch["batch_id"])
-    return set(first.values())
+        grouped.setdefault(batch["benchmark"], []).append(batch)
+    require(all(len(rows) > index and
+                (index == 0 or len(rows[index]["problem_ids"]) == 8)
+                for rows in grouped.values()), "canary batch is absent or incomplete")
+    return {rows[index]["batch_id"] for rows in grouped.values()}
 
 
 def worker(run: str | Path, stage: str, shard: int, source_run: str | Path | None = None,
@@ -367,7 +380,7 @@ def worker(run: str | Path, stage: str, shard: int, source_run: str | Path | Non
                 reference["repeat_max_abs"] <= 1e-5 and
                 all(value <= .005 for value in reference["masked_loss_errors"].values()),
                 "real-model numerical reference gate failed")
-    canary_ids = canary_batches(batches) if canary else None
+    canary_ids = canary_batches(batches, config.get("canary_batch_index", 0)) if canary else None
     selected = [batch for index, batch in enumerate(batches)
                 if index % config["execution"]["shards"] == shard and
                 (canary_ids is None or batch["batch_id"] in canary_ids)]

@@ -50,7 +50,8 @@ class E3HFBackend(HFBackend):
 
     def base_prompt(self, problem: dict) -> str:
         return self.tokenizer.apply_chat_template(
-            messages(problem), tokenize=False, add_generation_prompt=True,
+            messages(problem, self.e3_config["prompt_version"]),
+            tokenize=False, add_generation_prompt=True,
             **self.config["chat_template_kwargs"])
 
     def score_pair(self, full_context: str, deleted_context: str, target: str) -> dict:
