@@ -49,8 +49,13 @@ def main() -> None:
                 "unsafe_import": "harness_unsupported", "stdin_good": "correct"}
     if statuses != expected:
         raise RuntimeError("Synthetic harness controls failed: " + repr(statuses))
+    cpu_limit = _invoke({"code": "while True:\n    pass\n", "benchmark": "livecodebench",
+                         "io_type": "stdin", "entry_point": None, "inputs": "", "test": None}, scratch)
+    if (cpu_limit.get('status') != 'program_timeout' or
+            cpu_limit.get('reason') != 'per_test_cpu_limit' or not cpu_limit.get('isolation_ready')):
+        raise RuntimeError('CPU timeout classification failed: ' + repr(cpu_limit))
     save(root / "selftest.json", {"status": "PASS", "policy": POLICY,
-         "statuses": statuses, "isolation_probes_passed": True,
+         "statuses": statuses, "isolation_probes_passed": True, "cpu_timeout_control": cpu_limit,
          "harness_sha256": sha256(Path(__file__).resolve().parents[1] / "src" /
                                   "pals_validation" / "e3" / "code_harness.py"),
          "decoder_sha256": sha256(code_tests.__file__),

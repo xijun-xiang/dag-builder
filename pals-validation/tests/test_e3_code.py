@@ -3,15 +3,34 @@
 import base64
 import json
 import pickle
+import signal
 import unittest
 import zlib
 from pathlib import Path
 
-from pals_validation.e3.code_harness import UnsupportedCode, equal_lcb, static_check
+from pals_validation.e3.code_harness import POLICY, UnsupportedCode, _classify_child, equal_lcb, static_check
 from pals_validation.e3.code_tests import decode_lcb_tests
 
 
 class CodeEvaluationContractTests(unittest.TestCase):
+    def test_exit_classification_requires_isolation_handshake(self):
+        ready = (json.dumps(dict(policy=POLICY, isolation_probes_passed=True, phase='ready')) + '\n').encode()
+        self.assertEqual(_classify_child(ready, -signal.SIGXCPU)['reason'], 'per_test_cpu_limit')
+        for code in (-signal.SIGXCPU, -signal.SIGKILL, 1, 0):
+            self.assertEqual(_classify_child(b'', code)['status'], 'infrastructure_error')
+        for code in (-signal.SIGKILL, -signal.SIGTERM, 1):
+            self.assertEqual(_classify_child(ready, code)['status'], 'infrastructure_error')
+        self.assertEqual(_classify_child(ready, -9, True)['reason'], 'per_test_wall_limit')
+        self.assertEqual(_classify_child(b'', -9, True)['status'], 'infrastructure_error')
+        self.assertEqual(_classify_child(ready, 0)['reason'], 'invalid_final_record')
+        self.assertEqual(_classify_child(ready + b'[]\n', 0)['status'], 'infrastructure_error')
+        result = dict(policy=POLICY, isolation_probes_passed=True, status='executed', value=7)
+        checked = _classify_child(ready + json.dumps(result).encode(), 0)
+        self.assertEqual(checked['value'], 7)
+        self.assertEqual(checked['returncode'], 0)
+        self.assertTrue(checked['isolation_ready'])
+        self.assertEqual(len(checked['child_output_sha256']), 64)
+
     def test_cpu_job_can_read_frozen_policy(self):
         script = (Path(__file__).resolve().parents[1] / "scripts" /
                   "b1-e3-cpu.sbatch").read_text(encoding="utf-8")

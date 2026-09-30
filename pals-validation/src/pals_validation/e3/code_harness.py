@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import signal
 import socket
 import subprocess
 import sys
@@ -137,6 +138,9 @@ def _child() -> None:
         sys.stdin = io.TextIOWrapper(io.BytesIO(payload["inputs"].encode()), encoding="utf-8")
     _install_seccomp()
     result = {"policy": POLICY, "isolation_probes_passed": True}
+    # Emit before candidate execution; a killed child cannot emit its final result.
+    stdout.write(json.dumps({**result, "phase": "ready"}) + "\n")
+    stdout.flush()
     try:
         if syntax_error:
             raise SyntaxError("generated code does not parse")
@@ -179,30 +183,62 @@ def _child() -> None:
     stdout.flush()
 
 
+def _classify_child(raw: bytes, returncode: int, wall_timeout: bool = False) -> dict:
+    """Only an observed CPU signal *after* isolation readiness is a CPU timeout.
+
+    SIGKILL, startup failure, missing handshake and malformed final records stay
+    infrastructure errors. In particular, elapsed time is never a classifier.
+    """
+    lines = raw.splitlines()
+    def decoded(line):
+        try:
+            value = json.loads(line)
+            return value if isinstance(value, dict) else {}
+        except (ValueError, UnicodeError):
+            return {}
+    ready = decoded(lines[0]) if lines else {}
+    isolated = ready == {"policy": POLICY, "isolation_probes_passed": True, "phase": "ready"}
+    evidence = {"returncode": returncode, "termination_signal": -returncode if returncode < 0 else None,
+                "wall_timeout": wall_timeout, "isolation_ready": isolated,
+                "child_output_sha256": hashlib.sha256(raw).hexdigest(),
+                "child_output_bytes_captured": len(raw)}
+    if not isolated:
+        result = {"status": "infrastructure_error", "reason": "isolation_not_confirmed"}
+    elif wall_timeout:
+        result = {"status": "program_timeout", "reason": "per_test_wall_limit"}
+    elif returncode == -signal.SIGXCPU:
+        result = {"status": "program_timeout", "reason": "per_test_cpu_limit"}
+    elif returncode:
+        result = {"status": "infrastructure_error", "reason": "unexpected_child_exit"}
+    elif len(raw) > MAX_OUTPUT_BYTES + 1000:
+        result = {"status": "program_error", "reason": "output_limit"}
+    else:
+        result = decoded(lines[-1]) if len(lines) > 1 else {}
+        if (result.get("policy") != POLICY or result.get("isolation_probes_passed") is not True
+                or result.get("status") not in ("executed", "program_error")):
+            result = {"status": "infrastructure_error", "reason": "invalid_final_record"}
+    return {**result, **evidence}
+
+
 def _invoke(payload: dict, scratch: Path) -> dict:
     started = time.monotonic()
-    try:
-        with tempfile.TemporaryFile(mode="w+b", dir=scratch) as output:
-            process = subprocess.run(
+    with tempfile.TemporaryFile(mode="w+b", dir=scratch) as output:
+        # Popen retains the actual return code after TimeoutExpired kills/waits.
+        with subprocess.Popen(
                 [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--child"],
-                input=json.dumps(payload, ensure_ascii=False).encode(), stdout=output,
-                stderr=subprocess.STDOUT, timeout=12, cwd=scratch, close_fds=True,
-                env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONHASHSEED": "0"})
+                stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT,
+                cwd=scratch, close_fds=True,
+                env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONHASHSEED": "0"}) as process:
+            wall_timeout = False
+            try:
+                process.communicate(json.dumps(payload, ensure_ascii=False).encode(), timeout=12)
+            except subprocess.TimeoutExpired:
+                wall_timeout = True
+                process.kill()
+                process.communicate()
             output.seek(0)
             raw = output.read(MAX_OUTPUT_BYTES + 1024)
-        if len(raw) > MAX_OUTPUT_BYTES + 1000:
-            result = {"status": "program_error", "reason": "output_limit"}
-        else:
-            try:
-                result = json.loads(raw.decode().splitlines()[-1])
-            except (IndexError, ValueError, UnicodeError):
-                result = {}
-            if (process.returncode or result.get("policy") != POLICY or
-                    result.get("isolation_probes_passed") is not True):
-                result = {"status": "infrastructure_error", "reason": "isolation_or_child_failure",
-                          "returncode": process.returncode}
-    except subprocess.TimeoutExpired:
-        result = {"status": "program_timeout", "reason": "per_test_wall_limit"}
+            result = _classify_child(raw, process.returncode, wall_timeout)
     return {**result, "seconds": time.monotonic() - started}
 
 
@@ -264,7 +300,8 @@ def grade_code_answer(problem: dict, gold: dict, code: str, scratch: Path) -> di
                 "code_sha256": code_sha256, "tests_sha256": tests_sha256,
                 "policy": POLICY, "test_calls": checked.get("test_calls"),
                 "seconds": checked["seconds"], "reason": checked.get("reason") or
-                checked.get("exception_type")}
+                checked.get("exception_type"),
+                "diagnostics": {k: v for k, v in checked.items() if k != "value"}}
     if gold["kind"] != "lcb_code":
         raise ValueError("unknown generated-code benchmark")
     try:
@@ -282,7 +319,8 @@ def grade_code_answer(problem: dict, gold: dict, code: str, scratch: Path) -> di
         if status == "executed":
             status = "passed" if equal_lcb(checked["value"], case["expected"], gold["io_type"]) else "wrong_answer"
         results.append({"split": case["split"], "index": case["index"], "status": status,
-                        "test_sha256": digest(case), "seconds": checked["seconds"]})
+                        "test_sha256": digest(case), "seconds": checked["seconds"],
+                        "diagnostics": {k: v for k, v in checked.items() if k != "value"}})
         if status != "passed":
             break  # A single failed official test proves this one-shot answer did not pass.
     statuses = {row["status"] for row in results}
