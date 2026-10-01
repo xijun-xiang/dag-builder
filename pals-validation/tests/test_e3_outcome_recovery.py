@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from pals_validation.e3 import code_harness
+from pals_validation.e3 import code_harness, code_tests
 from pals_validation.e3.expanded import prepare as expand, worker
 from pals_validation.e3.outcome_recovery import audit, evaluate, prepare, validate
 from pals_validation.io import digest, encoded, read, save, sha256
@@ -38,6 +38,7 @@ class RecoveryTests(unittest.TestCase):
         outcomes[1].write_bytes(encoded(bad))
         test = root / 'selftest.json'
         save(test, dict(status='PASS', harness_sha256=sha256(code_harness.__file__),
+                        decoder_sha256=sha256(code_tests.__file__),
                         isolation_probes_passed=True, cpu_timeout_control=dict(reason='per_test_cpu_limit')))
         return run, test
 

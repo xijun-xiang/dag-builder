@@ -35,7 +35,8 @@ ROOT = Path('/work/projects/polyullm/xxj/PALS')
 def implementation_hashes():
     result = code_hashes()
     scripts = Path(__file__).resolve().parents[3] / 'scripts'
-    for name in ('e3_expanded_launch.py', 'b1-e3-expanded.sbatch', 'b1-e3-expanded-prepare.sbatch'):
+    for name in ('e3_expanded_launch.py', 'b1-e3-expanded.sbatch', 'b1-e3-expanded-prepare.sbatch',
+                 'e3_advance_expansion.py', 'b1-e3-continuation.sbatch'):
         result['scripts/' + name] = sha256(scripts / name)
     return result
 
@@ -191,6 +192,9 @@ def load(root: Path, slot: str):
     require(manifest['expansion_id'] == digest({k: v for k, v in manifest.items() if k != 'expansion_id'}),
             'expansion manifest changed')
     require(manifest['implementation_hashes'] == implementation_hashes(), 'expansion code changed')
+    if 'continuation' in manifest:
+        from .continuation import verify_imports
+        verify_imports(root, manifest)
     require(slot in SLOTS, 'unknown model slot')
     origin = manifest['sources'][slot]
     source = Path(origin['source'])
@@ -257,6 +261,8 @@ def worker(root: Path, slot: str, wave: int, stage: str, shard: int):
             verify(source, {'inputs/grading.json': origin['source_hashes']['inputs/grading.json']})
             grading = read(source / 'inputs/grading.json')
             policy = read(config['evaluation_manifest']) if config['backend'] == 'hf' else None
+            if 'continuation' in manifest:
+                policy = manifest['continuation']['evaluation_policies'][slot]
             (folder / 'scratch/code-eval').mkdir(parents=True, exist_ok=True, mode=0o700)
         for batch in selected:
             raw_path = folder / 'generation_batches' / (batch['batch_id'] + '.json')
