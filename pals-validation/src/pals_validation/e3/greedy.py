@@ -326,12 +326,15 @@ def evaluate(root: Path, slot: str, shard: int):
                 path = folder / "outcomes" / (digest(item) + ".json")
                 raw_hash = sha256(folder / "raw" / (batch["batch_id"] + ".json"))
                 if path.exists():
-                    require(read(path)["raw_sha256"] == raw_hash and read(path)["protocol_id"] == manifest["protocol_id"], "outcome source differs")
+                    saved = read(path)
+                    require(saved["raw_sha256"] == raw_hash and saved["protocol_id"] == manifest["protocol_id"], "outcome source differs")
+                    require(saved["status"] != "infrastructure_error", "prior evaluator infrastructure failure; stop")
                     continue
                 parsed = parse(row["raw_text"], row["finish_reason"], problems[item]["benchmark"])
                 outcome = evaluate_answer(problems[item], gold[item], parsed["answer"], code_policy=policy, scratch=scratch)
                 save(path, {"protocol_id": manifest["protocol_id"], "problem_id": item,
                             "raw_sha256": raw_hash, **outcome})
+                require(outcome["status"] != "infrastructure_error", "evaluator infrastructure failure; evidence retained")
     return {"status": "PASS", "slot": slot, "shard": shard}
 
 
@@ -393,6 +396,7 @@ def audit(root: Path, slot: str, include_outcomes=True):
             if include_outcomes:
                 require(outcome["raw_sha256"] == sha256(raw_path) and outcome["protocol_id"] == protocol_id
                         and outcome["problem_id"] == item, "outcome provenance")
+                require(outcome["status"] != "infrastructure_error", "evaluator infrastructure failure")
                 hashes[str(outcome_path.relative_to(folder))] = sha256(outcome_path)
             hashes[str(path.relative_to(folder))] = sha256(path)
             rows.append({"problem_id": item, "benchmark": problem["benchmark"], "subset": problem["subset"],

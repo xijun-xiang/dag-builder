@@ -133,6 +133,20 @@ class LifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "UNCERTAIN_GENERATION"):
                 greedy.process_batch(run, "qwen25", b, E3MockBackend("", c), m, p)
 
+    def test_evaluator_infrastructure_failure_is_preserved_and_stops(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run = fixture(Path(temp))
+            greedy.gpu_worker(run, "qwen25", 0, barrier=False)
+            with patch.object(greedy, "evaluate_answer", return_value={"status": "infrastructure_error", "correct": None}):
+                with self.assertRaisesRegex(ValueError, "infrastructure failure"):
+                    greedy.evaluate(run, "qwen25", 0)
+            files = list((run / "qwen25/outcomes").glob("*.json"))
+            self.assertEqual(len(files), 1)
+            self.assertEqual(read(files[0])["status"], "infrastructure_error")
+            with patch.object(greedy, "evaluate_answer", side_effect=AssertionError("do not retry")):
+                with self.assertRaisesRegex(ValueError, "prior evaluator"):
+                    greedy.evaluate(run, "qwen25", 0)
+
     def test_wrong_raw_hash_and_config_fail_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             run = fixture(Path(temp))
