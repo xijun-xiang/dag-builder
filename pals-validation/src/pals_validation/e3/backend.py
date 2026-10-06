@@ -10,6 +10,19 @@ from .protocol import messages, parse_trace
 from .schema import require
 
 
+def generation_options(cfg: dict) -> dict:
+    """Separate greedy decoding from sampling; never feed temperature=0 to a sampler."""
+    common = {"do_sample": cfg["do_sample"], "num_beams": cfg["num_beams"],
+              "repetition_penalty": cfg["repetition_penalty"]}
+    if cfg["do_sample"]:
+        require(cfg["temperature"] > 0, "sampling requires positive temperature")
+        common.update(temperature=cfg["temperature"], top_p=cfg["top_p"], top_k=cfg["top_k"])
+    else:
+        require(cfg["temperature"] == 0 and cfg["num_beams"] == 1,
+                "E3 greedy decoding requires T=0 and one beam")
+    return common
+
+
 class AnswerBoundaryTracker:
     """Track each row's first closing answer tag without repeatedly decoding its full history."""
 
@@ -98,9 +111,7 @@ class E3HFBackend(HFBackend):
             torch.cuda.manual_seed_all(seed)
         cfg = self.e3_config["generation"]
         generation_config = GenerationConfig(
-            do_sample=True, temperature=cfg["temperature"], top_p=cfg["top_p"],
-            top_k=cfg["top_k"], repetition_penalty=cfg["repetition_penalty"],
-            num_beams=cfg["num_beams"], max_new_tokens=budget,
+            **generation_options(cfg), max_new_tokens=budget,
             eos_token_id=eos_ids, pad_token_id=pad, use_cache=True)
         with torch.inference_mode():
             result = self.model.generate(input_ids=input_ids, attention_mask=attention,
@@ -123,7 +134,8 @@ class E3HFBackend(HFBackend):
         return {"seed": seed, "batch_size": len(rows), "rows": rows,
                 "generation_contract": {"boundary": "</answer>", "max_new_tokens": budget,
                     "max_context": self.config["max_context"], "eos_token_ids": eos_ids,
-                    "pad_token_id": pad, "constrained_decoding": False}}
+                    "pad_token_id": pad, "constrained_decoding": False,
+                    "decoding": generation_options(cfg)}}
 
 
 class E3MockBackend:

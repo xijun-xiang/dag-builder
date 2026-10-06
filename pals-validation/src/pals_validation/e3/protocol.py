@@ -25,6 +25,16 @@ SYSTEM_PROMPT_V2 = (
     "after </answer>. Do not use a preface, headings, numbering outside the "
     "blocks, Markdown code fences, or any text outside the blocks."
 )
+SYSTEM_PROMPT_GREEDY = (
+    "Solve the task. Explain your reasoning using <step>...</step> blocks. "
+    "Each step should express one main reasoning operation and its resulting "
+    "intermediate conclusion. Start a new step when you move to a new reasoning "
+    "operation. Do not put a whole multi-stage solution in a single step. "
+    "Do not split sentences, repeat the question, or add filler just to create "
+    "more steps. Use only as many substantive steps as the task needs. "
+    "After all reasoning, write the final answer inside one <answer>...</answer> "
+    "block. Begin directly with <step> and stop after </answer>."
+)
 SUFFIX = {
     "gpqa": "In <answer>, write only the chosen option label.",
     "mmlu": "In <answer>, write only the chosen option label.",
@@ -40,7 +50,7 @@ TAGS = ("<step>", "</step>", "<answer>", "</answer>")
 
 def messages(problem: dict, prompt_version: str = "native-trace-prompt-v1") -> list[dict]:
     validate_problem(problem)
-    if prompt_version not in ("native-trace-prompt-v1", "native-trace-prompt-v2"):
+    if prompt_version not in ("native-trace-prompt-v1", "native-trace-prompt-v2", "native-greedy-prompt-v1"):
         raise ValueError("Unknown E3 prompt version")
     task = problem["benchmark"]
     question = problem["question"]
@@ -59,6 +69,8 @@ def messages(problem: dict, prompt_version: str = "native-trace-prompt-v1") -> l
                      "inside <step> blocks, then give exactly one <answer> block. "
                      "Do not use Markdown fences or any text outside the tags.")
     system = SYSTEM_PROMPT_V2 if prompt_version == "native-trace-prompt-v2" else SYSTEM_PROMPT
+    if prompt_version == "native-greedy-prompt-v1":
+        system = SYSTEM_PROMPT_GREEDY
     return [{"role": "system", "content": system + " " + SUFFIX[task]},
             {"role": "user", "content": question}]
 

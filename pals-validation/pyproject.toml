@@ -12,10 +12,12 @@ dependencies = []
 [project.optional-dependencies]
 inference = ["torch>=2.4,<3", "transformers>=4.46,<6", "accelerate>=1,<2", "sentencepiece>=0.2"]
 e3-source = ["pyarrow>=15,<30"]
+e3-analysis = ["numpy>=1.26,<3"]
 
 [project.scripts]
 pals-validation = "pals_validation.cli:main"
 pals-e3 = "pals_validation.e3.cli:main"
+pals-e3-greedy = "pals_validation.e3.greedy_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
