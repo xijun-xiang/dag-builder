@@ -31,8 +31,9 @@ B1 六项任务 114566—114571 经逐项确认仍在排队后取消，耗时均
    及全部科学设置与 B1 一致。数据哈希保持原样，不重新构造题目。
 5. A1 CPU init 执行安全隔离自检、三模型文件哈希和全量上下文预算检查，随后冻结。
    CPU init 提交记录单独保存在 `init-submissions/`，正式链使用 `submissions/`。
-6. 只有 Slurm 主/batch/step 成功且应用 init=PASS 后，才调用原一次性提交器，
-   提交 GPU24h→CPU16CPU64G4h 的三模型链。缺项/失败保留证据并停止。
+6. 只有 Slurm 主/batch/step 成功且应用 init=PASS 后，才调用一次性提交器，
+   提交 GPU24h→CPU16CPU64G4h 的三模型链。全部先HOLD，经实际参数核验再释放。
+   缺项/失败保留证据并停止。
 
 跨硬件可能引入数值差异，故本次结果注明 A1 部署，不与 B1 旧分数混写为同一次实验。
 不因迁移调整生成参数、模型、资源上限或统计定义；若环境不兼容，应先报告具体证据。
@@ -67,6 +68,30 @@ B1 六项任务 114566—114571 经逐项确认仍在排队后取消，耗时均
 逐项核验实际排除节点、reservation、资源、路径和依赖，再释放正确的任务链。
 不得继续使用该环境变量方案，也不得重启旧包装脚本或覆盖失败账本。
 冻结科学代码仍为246bf4d；调度变化及旧失败来源独立记录，不伪装为实验参数的变更。
+
+### 修正提交器：explicit-held-v1
+
+用户再次批准后，修正仓库内`e3_greedy_submit.py`，不再依赖私有环境变量包装：
+
+- `--exclude-node`写入每条sbatch的显式`--exclude`，同时写入不可变调度账本。
+- 所有六项任务都加`--hold`；清除继承的`SBATCH_*`选项，不允许暗中改变申请。
+- `--action verify`逐项查询实际Slurm字段：用户、HOLD、节点排除、pretrain、
+  分区、8GPU或0GPU、CPU/内存/时限、源码/日志路径、afterok和失败依赖取消。
+- `--action release`在锁内再次核验全部六项，先释放下游、最后释放首个GPU任务；
+  释放命令有独占尝试记录，中断或不确定状态不自动重放。
+- 原CPU安全与预算门槛、科学输入及数值门槛不改变。部署为新冻结提交和新运行目录，
+  不覆盖246bf4d旧快照。最终执行提交与作业号记录在对应运行回执。
+
+调用顺序（各路径和CPU init ID必须使用新批次的真实值）：
+
+```bash
+python scripts/e3_greedy_submit.py --root RUN --prepared INPUT --init-job ID --exclude-node NODE
+python scripts/e3_greedy_submit.py --root RUN --prepared INPUT --init-job ID --action verify
+python scripts/e3_greedy_submit.py --root RUN --prepared INPUT --init-job ID --action release
+```
+
+本地纯CPU回归包含：显式参数、继承环境污染、14种调度字段不匹配、串行释放顺序、
+部分释放失败后首GPU仍保持HOLD、重复提交/释放拒绝。测试模拟调度器，不能替代真实回读。
 
 新旧运行须逐项比较题目、模型配置、批次、实现哈希和判分规则。
 每次重新执行安全自检会产生新的作业ID/时间记录，故自检摘要及派生protocol_id
