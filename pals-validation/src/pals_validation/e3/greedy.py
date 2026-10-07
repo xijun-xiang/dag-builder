@@ -80,7 +80,7 @@ def batches_for(problems: list, config: dict) -> list:
     return [v[0] for v in grouped.values()] + [b for v in grouped.values() for b in v[1:]]
 
 
-def init(prepared: Path, configs: dict, policy: dict, output: Path) -> dict:
+def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_plan=None) -> dict:
     meta, problems = greedy_data.validate(prepared)
     require(set(configs) == set(SLOTS), "exactly three models required")
     require(not output.exists(), "new run must not exist")
@@ -119,6 +119,9 @@ def init(prepared: Path, configs: dict, policy: dict, output: Path) -> dict:
         "analysis": {"bootstrap_draws": 5000, "seed": 2026100601,
                      "primary": ["G", "M"], "auxiliary": ["NLL"],
                      "step_bins": [[2, 2], [3, 5], [6, None]]}}
+    if recovery_plan is not None:
+        manifest["recovery"] = {"plan_sha256": digest(recovery_plan),
+                                "source_protocol_id": recovery_plan["source_protocol_id"]}
     manifest["protocol_id"] = digest(manifest)
     save(output / "manifest.json", manifest)
     return {"protocol_id": manifest["protocol_id"], "counts": meta["counts"],
@@ -133,6 +136,9 @@ def load(root: Path, slot: str):
     verify(root, manifest["files"])
     require(manifest["code_hashes"] == implementation_hashes(), "frozen code changed")
     require(manifest["deployment"] == profile().record(), "deployment profile changed")
+    if "recovery" in manifest:
+        from .greedy_recovery import validate_ready
+        validate_ready(root, manifest)
     config = read(root / slot / "config.json")
     validate_config(config)
     problems = read(root / "inputs/problems.json")
@@ -202,6 +208,14 @@ def raw_batch(folder: Path, batch: dict, protocol_id: str) -> dict:
     require(raw["output"]["seed"] == batch["seed"] and
             raw["output"]["batch_size"] == len(batch["problem_ids"]), "raw batch settings changed")
     require([r["problem_id"] for r in raw["output"]["rows"]] == batch["problem_ids"], "raw question coverage")
+    if "recovery_origin" in raw:
+        source = folder.parent / "recovery/source" / folder.name / "raw" / path.name
+        info = raw["recovery_origin"]
+        require(info["source_file"] == f"{folder.name}/raw/{path.name}" and
+                sha256(source) == info["source_sha256"], "imported raw hash")
+        old = read(source)
+        require(old["protocol_id"] == info["source_protocol_id"] and
+                raw == {**old, "protocol_id": protocol_id, "recovery_origin": info}, "imported raw altered")
     return raw
 
 
@@ -346,6 +360,9 @@ def evaluate(root: Path, slot: str, shard: int):
 def audit(root: Path, slot: str, include_outcomes=True):
     manifest, config, problems, batches = load(root, slot)
     folder, protocol_id = root / slot, manifest["protocol_id"]
+    if "recovery" in manifest:
+        from .greedy_recovery import verify_imports
+        verify_imports(root, slot, manifest)
     encode = token_encoder(config)
     tokenizer = None
     if config["backend"] == "hf":

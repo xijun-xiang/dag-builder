@@ -9,13 +9,14 @@ import re
 from .decoupled import parse_decoupled
 from .schema import require
 
-VERSION = "explicit-step-boundaries-v1"
+V1_VERSION = "explicit-step-boundaries-v1"
+VERSION = "explicit-step-boundaries-v2-title-body"
 _MARKER = re.compile(r"</?(?:step|answer)\b")
 
 
-def parse(raw: str, finish: str, benchmark: str) -> dict:
+def parse_v1(raw: str, finish: str, benchmark: str) -> dict:
     old = parse_decoupled(raw, finish, benchmark)
-    result = {**old, "parser_version": VERSION, "segmentation_methods": []}
+    result = {**old, "parser_version": V1_VERSION, "segmentation_methods": []}
     if old["process_valid"]:
         result["segmentation_methods"] = ["closed_tag"] * len(old["steps"])
         return result
@@ -77,4 +78,64 @@ def parse(raw: str, finish: str, benchmark: str) -> dict:
     # length-ended answers remain invalid even when reasoning is complete.
     for step in steps:
         require(raw[slice(*step["span"])] == step["text"], "non-lossless extraction")
+    return result
+
+
+def parse(raw: str, finish: str, benchmark: str) -> dict:
+    """Keep v1-valid spans exact; recover only explicit title/body step blocks.
+
+    A closed title followed by prose and the next explicit opening tag is one
+    step. Its target is one unchanged contiguous span, including the internal
+    closing delimiter. We neither drop prose nor move the delimiter in raw.
+    This format is labelled separately for sensitivity analyses. No implicit
+    sentence boundary, preface, truncated reasoning or guessed answer is used.
+    """
+    old = parse_v1(raw, finish, benchmark)
+    result = {**old, "parser_version": VERSION}
+    if old["process_valid"] or old["reason"] != "no_explicit_step_or_answer_boundary":
+        return result
+    steps, methods, pos = [], [], 0
+    while True:
+        while pos < len(raw) and raw[pos].isspace():
+            pos += 1
+        if raw.startswith("<answer>", pos):
+            break
+        if not raw.startswith("<step>", pos):
+            return result
+        start = pos + len("<step>")
+        marker = _MARKER.search(raw, start)
+        if marker is None or not raw[start:marker.start()].strip():
+            return result
+        end = marker.start()
+        if raw.startswith("</step>", end):
+            right = end + len("</step>")
+            following = _MARKER.search(raw, right)
+            if following is None:
+                return result  # no explicit boundary: never salvage truncation
+            next_pos = following.start()
+            if not (raw.startswith("<step>", next_pos) or raw.startswith("<answer>", next_pos)):
+                return result
+            if raw[right:next_pos].strip():
+                end, right, method = next_pos, next_pos, "title_and_body_explicit_boundary"
+            else:
+                method = "closed_tag"
+        elif raw.startswith("<step>", end) or raw.startswith("<answer>", end):
+            right, method = end, "next_explicit_open_tag"
+        else:
+            return result
+        steps.append({"text": raw[start:end], "span": [start, end], "block_span": [pos, right]})
+        methods.append(method)
+        pos = right
+    tail = raw[pos:]
+    if (not steps or "title_and_body_explicit_boundary" not in methods or
+            finish not in ("boundary", "eos", "length") or tail.count("<answer>") != 1 or
+            tail.count("</answer>") > 1 or re.search(r"</?step\b", tail) or
+            ("</answer>" in tail and tail.split("</answer>", 1)[1].strip()) or
+            ("</answer>" not in tail and finish not in ("eos", "length"))):
+        return result
+    result.update(steps=steps, process_valid=True, reason=None, segmentation_methods=methods,
+                  answer_boundary={"offset": pos, "kind": "answer_open_tag"})
+    result["status"] = {**old["status"], "reasoning_structure_valid": True}
+    for step in steps:
+        require(raw[slice(*step["span"])] == step["text"], "non-lossless title/body extraction")
     return result

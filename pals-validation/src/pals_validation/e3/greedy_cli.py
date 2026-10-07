@@ -21,6 +21,7 @@ def main():
     p.add_argument("--sources", type=Path)
     p.add_argument("--configs", type=Path)
     p.add_argument("--selftest", type=Path)
+    p.add_argument("--recover-from", type=Path, help="Read-only sealed v1 source; never regenerate existing output")
     p.add_argument("--slot", choices=tuple(greedy.SLOTS))
     p.add_argument("--shard", type=int)
     p.add_argument("--deadline", type=float, default=float("inf"))
@@ -74,7 +75,14 @@ def main():
                   "livecodebench_code": "official_compatible_tests_seccomp_v1",
                   "harness_policy": POLICY, "harness_sha256": sha256(code_harness.__file__),
                   "decoder_sha256": sha256(code_tests.__file__), "selftest_sha256": sha256(args.selftest)}
-        result = greedy.init(args.prepared, configs, policy, args.root)
+        recovery_plan = None
+        if args.recover_from:
+            assert_project_path(args.recover_from)
+            from .greedy_recovery import plan, import_sealed
+            recovery_plan = plan(args.recover_from)
+        result = greedy.init(args.prepared, configs, policy, args.root, recovery_plan=recovery_plan)
+        if args.recover_from:
+            import_sealed(args.recover_from, args.root, recovery_plan)
         save(args.selftest.parent / "init.json", {"status": "PASS", "job_id": os.environ["SLURM_JOB_ID"],
             "run": str(args.root), "protocol_id": result["protocol_id"],
             "selftest_sha256": sha256(args.selftest),

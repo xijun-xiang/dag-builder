@@ -32,8 +32,15 @@ fi
 end_time=$(scontrol show job "$SLURM_JOB_ID" -o | tr ' ' '\n' | sed -n 's/^EndTime=//p')
 export PALS_DEADLINE=$(( $(date -d "$end_time" +%s) - 3600 ))
 cd "$PALS_JOB_ROOT"
+recovery_mount=""
+if [ -n "${PALS_RECOVERY_SOURCE:-}" ]; then
+  case "$PALS_RECOVERY_SOURCE" in "$PALS_ROOT"/runs/*/experiment) ;; *) exit 64 ;; esac
+  test "$(realpath "$PALS_RECOVERY_SOURCE")" = "$PALS_RECOVERY_SOURCE"
+  test "$PALS_RECOVERY_SOURCE" != "$PALS_EXPERIMENT"
+  recovery_mount=",$PALS_RECOVERY_SOURCE:$PALS_RECOVERY_SOURCE:ro"
+fi
 srun --container-image=/lustre/projects/polyullm/container/lmsysorg+sglang+v0.5.12+infix+v6.sqsh \
- --container-mounts="$PALS_REPO:$PALS_REPO:ro,$PALS_ROOT/models/hf:$PALS_ROOT/models/hf:ro,$PALS_ROOT/configs/e3:$PALS_ROOT/configs/e3:ro,$PALS_PREPARED:$PALS_PREPARED:ro,$PALS_JOB_ROOT:$PALS_JOB_ROOT:rw" \
+ --container-mounts="$PALS_REPO:$PALS_REPO:ro,$PALS_ROOT/models/hf:$PALS_ROOT/models/hf:ro,$PALS_ROOT/configs/e3:$PALS_ROOT/configs/e3:ro,$PALS_PREPARED:$PALS_PREPARED:ro,$PALS_JOB_ROOT:$PALS_JOB_ROOT:rw$recovery_mount" \
  --container-workdir="$PALS_JOB_ROOT" --container-remap-root --no-container-mount-home \
  bash -c '
 set -euo pipefail
@@ -46,8 +53,12 @@ if [ "$PALS_STAGE" = init ]; then
   export PALS_HARNESS_RUN="$PALS_JOB_ROOT/preflight"
   mkdir -p "$PALS_HARNESS_RUN"
   python3 "$PALS_REPO/scripts/e3_harness_selftest.py"
+  recovery_args=()
+  if [ -n "${PALS_RECOVERY_SOURCE:-}" ]; then
+    recovery_args=(--recover-from "$PALS_RECOVERY_SOURCE")
+  fi
   python3 -m pals_validation.e3.greedy_cli init --root "$PALS_EXPERIMENT" --prepared "$PALS_PREPARED" \
-   --configs /work/projects/polyullm/xxj/pals/configs/e3/20261007-native-v2-format --selftest "$PALS_HARNESS_RUN/selftest.json"
+   --configs /work/projects/polyullm/xxj/pals/configs/e3/20261007-native-v2-format --selftest "$PALS_HARNESS_RUN/selftest.json" "${recovery_args[@]}"
 else
   test "$(realpath "$PALS_EXPERIMENT")" = "$PALS_EXPERIMENT"
   python3 "$PALS_REPO/scripts/e3_greedy_launch.py"
