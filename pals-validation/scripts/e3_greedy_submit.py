@@ -120,13 +120,15 @@ def verify_held(record, root, repo, previous, excluded):
     expected = {"JobName": f"e3g-{slot}-{stage}", "JobState": "PENDING", "Priority": "0",
         "ExcNodeList": ",".join(excluded) if excluded else "(null)", "Partition": "defq",
         "WorkDir": str(root), "Command": str(repo / "scripts" / profile().launcher),
-        "NumNodes": "1", "NumTasks": "1", "Requeue": "0", "Restarts": "0",
+        "NumTasks": "1", "Requeue": "0", "Restarts": "0",
         "StdOut": str(root / "logs" / f"{job}-e3g-{slot}-{stage}.out"),
         "StdErr": str(root / "logs" / f"{job}-e3g-{slot}-{stage}.err")}
     if profile().reservation:
         expected["Reservation"] = profile().reservation
     for key, value in expected.items():
         require(f.get(key) == value, f"scheduler {key} differs: {f.get(key)!r}")
+    # Slurm 23.02 prints the exact one-node bound as "1-1" while held.
+    require(f.get("NumNodes") in ("1", "1-1"), "scheduler node count differs")
     require(f.get("UserId", "").startswith("xijun("), "wrong job owner")
     cpus, memory, wall = (32, "256G", ("1-00:00:00", "24:00:00")) if stage == "gpu" else (16, "64G", ("04:00:00",))
     require(f.get("NumCPUs") == str(cpus) and f.get("CPUs/Task") == str(cpus), "CPU allocation differs")
@@ -165,7 +167,8 @@ def verify_chain(root, repo, prepared, init_job):
     for line in active:
         job, name = line.split(maxsplit=1)
         require(not name.startswith(("e3g-", "e3c-", "e3x-")) or job in ids, "another E3 job is active")
-    return {"status": "PASS", "protocol_id": manifest["protocol_id"], "jobs": jobs, "scheduler": snapshots}
+    return {"status": "PASS", "protocol_id": manifest["protocol_id"], "jobs": jobs, "scheduler": snapshots,
+            "controller_sha256": sha256(Path(__file__)), "runtime_repo": str(repo)}
 
 
 def release(root, repo, prepared, init_job):
@@ -193,13 +196,18 @@ if __name__ == "__main__":
     p.add_argument("--init-job", required=True)
     p.add_argument("--action", choices=("submit", "verify", "release"), default="submit")
     p.add_argument("--exclude-node", action="append", default=[])
+    p.add_argument("--runtime-repo", type=Path, help="Verify/release an existing frozen runtime without modifying it")
     args = p.parse_args()
     os.umask(0o077)
     cluster = profile()
     os.environ["SLURM_CONF"] = cluster.slurm_conf
     os.environ["PATH"] = cluster.slurm_bin + ":" + os.environ["PATH"]
     import json
-    repo = Path(__file__).resolve().parents[1]
+    repo = args.runtime_repo or Path(__file__).resolve().parents[1]
+    if args.runtime_repo:
+        require(args.action in ("verify", "release"), "runtime override cannot submit new jobs")
+        require(Path(load.__globals__["__file__"]).resolve() == repo / "src/pals_validation/e3/greedy.py",
+                "PYTHONPATH does not match the frozen runtime")
     if args.action == "submit":
         result = submit(args.root, repo, args.prepared, args.init_job, args.exclude_node)
     else:

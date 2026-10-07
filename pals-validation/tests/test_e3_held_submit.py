@@ -52,7 +52,7 @@ class HeldTests(unittest.TestCase):
                 states[job] = {'JobId': job, 'JobName': name, 'JobState': 'PENDING', 'Priority': '0',
                     'ExcNodeList': EXCLUDED, 'Partition': 'defq', 'Reservation': 'pretrain',
                     'WorkDir': str(root), 'Command': str(repo / 'scripts/a1-e3-greedy.sbatch'),
-                    'NumNodes': '1', 'NumTasks': '1', 'Requeue': '0', 'Restarts': '0',
+                    'NumNodes': '1-1', 'NumTasks': '1', 'Requeue': '0', 'Restarts': '0',
                     'StdOut': str(root / 'logs' / f'{job}-{name}.out'),
                     'StdErr': str(root / 'logs' / f'{job}-{name}.err'), 'UserId': 'xijun(101112)',
                     'NumCPUs': '32' if gpu else '16', 'CPUs/Task': '32' if gpu else '16',
@@ -120,6 +120,19 @@ class HeldTests(unittest.TestCase):
         for name in ('', 'node,other', '--help', 'node;cmd', '/tmp', 'node 42'):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 SUBMIT.exclusions([name])
+
+    def test_exact_node_count_scalar_or_range_only(self):
+        for value in ('1', '1-1', '2', '1-2', '0-1', '(null)'):
+            with self.subTest(value=value), self.setup_scheduler() as (root, repo, prepared, states, _, releases):
+                SUBMIT.submit(root, repo, prepared, '10', [EXCLUDED])
+                for f in states.values():
+                    f['NumNodes'] = value
+                if value in ('1', '1-1'):
+                    self.assertEqual(SUBMIT.verify_chain(root, repo, prepared, '10')['status'], 'PASS')
+                else:
+                    with self.assertRaisesRegex(ValueError, 'node count'):
+                        SUBMIT.release(root, repo, prepared, '10')
+                self.assertEqual(releases, [])
 
 
 if __name__ == '__main__':
