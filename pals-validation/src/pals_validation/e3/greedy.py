@@ -17,6 +17,7 @@ from . import greedy_data
 from .audit import _score_matches, token_encoder
 from .backend import E3HFBackend, E3MockBackend, generation_options
 from .evaluate import evaluate_answer
+from .deployment import assert_project_path, profile
 from .greedy_parse import VERSION as PARSER_VERSION, parse
 from .metrics import summarize_trace
 from .protocol import score_text_pair
@@ -54,7 +55,7 @@ def validate_config(config: dict):
 def implementation_hashes():
     hashes = code_hashes()
     root = Path(__file__).resolve().parents[3]
-    for name in ("e3_greedy_launch.py", "b1-e3-greedy.sbatch", "e3_greedy_submit.py"):
+    for name in ("e3_greedy_launch.py", "b1-e3-greedy.sbatch", "a1-e3-greedy.sbatch", "e3_greedy_submit.py"):
         path = root / "scripts" / name
         if path.exists():
             hashes["scripts/" + name] = sha256(path)
@@ -111,6 +112,7 @@ def init(prepared: Path, configs: dict, policy: dict, output: Path) -> dict:
             save(folder / "model-files.json", read(config["model"]["files_manifest"]))
             files[f"{slot}/model-files.json"] = sha256(folder / "model-files.json")
     manifest = {"protocol_version": VERSION, "files": files, "code_hashes": implementation_hashes(),
+        "deployment": profile().record(),
         "scientific_evidence": meta["scientific_evidence"], "counts": meta["counts"],
         "initial_batches": len(meta["counts"]), "generation_attempts_per_question": 1,
         "coverage_review": {"overall": .9, "per_benchmark": .75},
@@ -130,6 +132,7 @@ def load(root: Path, slot: str):
             digest({k: v for k, v in manifest.items() if k != "protocol_id"}), "protocol changed")
     verify(root, manifest["files"])
     require(manifest["code_hashes"] == implementation_hashes(), "frozen code changed")
+    require(manifest["deployment"] == profile().record(), "deployment profile changed")
     config = read(root / slot / "config.json")
     validate_config(config)
     problems = read(root / "inputs/problems.json")
@@ -262,7 +265,8 @@ def gpu_worker(root: Path, slot: str, shard: int, deadline: float = float("inf")
     require(0 <= shard < 8, "shard outside allocation")
     if config["backend"] == "hf":
         require(bool(os.environ.get("SLURM_JOB_ID")) and os.environ.get("CUDA_VISIBLE_DEVICES") and
-                root.resolve() == root and Path("/work/projects/polyullm/xxj/PALS") in root.parents, "GPU execution boundary")
+                root.resolve() == root, "GPU execution boundary")
+        assert_project_path(root)
     with exclusive_lock(root / slot / "locks" / f"gpu-{shard}.lock"):
         runtime = {**config, "device": "cuda:0"}
         backend = E3HFBackend(config["model"]["path"], runtime) if config["backend"] == "hf" else E3MockBackend("", runtime)
@@ -309,8 +313,9 @@ def evaluate(root: Path, slot: str, shard: int):
     require(0 <= shard < 8, "shard outside allocation")
     if config["backend"] == "hf":
         require(os.environ.get("SLURM_JOB_ID") and not os.environ.get("CUDA_VISIBLE_DEVICES") and
-                root.resolve() == root and Path("/work/projects/polyullm/xxj/PALS") in root.parents,
+                root.resolve() == root,
                 "CPU evaluation boundary")
+        assert_project_path(root)
     folder = root / slot
     gold = read(root / "grading/answers.json")
     policy = read(root / "grading/policy.json")

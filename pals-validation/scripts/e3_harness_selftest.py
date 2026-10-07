@@ -6,16 +6,14 @@ from pathlib import Path
 
 from pals_validation.e3.code_harness import POLICY, _invoke, grade_code_answer
 from pals_validation.e3 import code_tests
+from pals_validation.e3.deployment import assert_project_path
 from pals_validation.io import save, sha256
 
 
 def main() -> None:
     if not os.environ.get("SLURM_JOB_ID") or os.environ.get("CUDA_VISIBLE_DEVICES"):
         raise RuntimeError("The code harness self-test requires a GPU-free Slurm job")
-    root = Path(os.environ["PALS_HARNESS_RUN"]).resolve(strict=True)
-    fence = Path("/work/projects/polyullm/xxj/PALS").resolve(strict=True)
-    if fence not in root.parents:
-        raise RuntimeError("Self-test output is outside PALS")
+    root = assert_project_path(Path(os.environ["PALS_HARNESS_RUN"]))
     scratch = root / "scratch"
     scratch.mkdir(mode=0o700, exist_ok=True)
     probe = _invoke({"code": "def identity(x):\n    return x\n", "benchmark": "livecodebench",

@@ -9,12 +9,10 @@ from pathlib import Path
 import subprocess
 
 from pals_validation.e3.greedy import SLOTS, load
+from pals_validation.e3.deployment import profile
 from pals_validation.e3.schema import require
 from pals_validation.io import read, save, sha256
 from pals_validation.locking import exclusive_lock
-
-FENCE = Path("/work/projects/polyullm/xxj/PALS")
-
 
 def completed(job):
     raw = subprocess.check_output(["sacct", "-j", job, "--format=JobID,State,ExitCode", "-Pn"], text=True)
@@ -24,8 +22,10 @@ def completed(job):
 
 
 def submit(root: Path, repo: Path, prepared: Path, init_job: str):
-    for path in (FENCE, root, repo, prepared):
-        require(path.resolve(strict=True) == path and (path == FENCE or FENCE in path.parents), "outside PALS/symlink")
+    cluster = profile()
+    fence = Path(cluster.root)
+    for path in (fence, root, repo, prepared):
+        require(path.resolve(strict=True) == path and (path == fence or fence in path.parents), "outside PALS/symlink")
     require(init_job.isdigit(), "bad init job")
     completed(init_job)
     require(not subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"], text=True).strip(), "dirty frozen code")
@@ -49,15 +49,18 @@ def submit(root: Path, repo: Path, prepared: Path, init_job: str):
                 command = ["sbatch", "--parsable", "--job-name=" + name,
                     "--output=" + str(root / "logs" / ("%j-" + name + ".out")),
                     "--error=" + str(root / "logs" / ("%j-" + name + ".err"))]
+                if cluster.reservation:
+                    command += ["--reservation=" + cluster.reservation]
                 if stage == "gpu":
                     command += ["--gpus-per-node=8", "--cpus-per-task=32", "--mem=256G", "--time=24:00:00"]
                 else:
                     command += ["--gres=none", "--cpus-per-task=16", "--mem=64G", "--time=04:00:00"]
                 if previous:
                     command += ["--dependency=afterok:" + previous, "--kill-on-invalid-dep=yes"]
-                command.append(str(repo / "scripts/b1-e3-greedy.sbatch"))
+                command.append(str(repo / "scripts" / cluster.launcher))
                 env = {**os.environ, "PALS_REPO": str(repo), "PALS_JOB_ROOT": str(root),
-                       "PALS_PREPARED": str(prepared), "PALS_STAGE": stage, "PALS_SLOT": slot}
+                       "PALS_PREPARED": str(prepared), "PALS_STAGE": stage, "PALS_SLOT": slot,
+                       "PALS_CLUSTER": cluster.name}
                 save(ledger / (name + "-attempt.json"), {"command": command, "protocol_id": manifest["protocol_id"]})
                 reply = subprocess.check_output(command, env=env, cwd=root, text=True).strip()
                 previous = reply.split(";")[0]
@@ -77,7 +80,8 @@ if __name__ == "__main__":
     p.add_argument("--init-job", required=True)
     args = p.parse_args()
     os.umask(0o077)
-    os.environ["SLURM_CONF"] = "/cm/shared/apps/slurm/etc/slurm/slurm.conf"
-    os.environ["PATH"] = "/cm/local/apps/slurm/current/bin:" + os.environ["PATH"]
+    cluster = profile()
+    os.environ["SLURM_CONF"] = cluster.slurm_conf
+    os.environ["PATH"] = cluster.slurm_bin + ":" + os.environ["PATH"]
     import json
     print(json.dumps(submit(args.root, Path(__file__).resolve().parents[1], args.prepared, args.init_job)), flush=True)

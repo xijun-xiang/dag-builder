@@ -10,6 +10,7 @@ from .code_harness import POLICY
 from . import code_harness, code_tests
 from .run import _model_files
 from .schema import require
+from .deployment import assert_project_path
 
 
 def main():
@@ -30,6 +31,8 @@ def main():
         result = greedy_data.prepare(args.prepared, args.sources, args.root)
     elif args.stage == "init":
         require(os.environ.get("SLURM_JOB_ID") and not os.environ.get("CUDA_VISIBLE_DEVICES"), "CPU init only")
+        for path in (args.root.parent, args.prepared, args.configs, args.selftest):
+            assert_project_path(path)
         check = read(args.selftest)
         require(check["status"] == "PASS" and check["isolation_probes_passed"] and
                 check["harness_sha256"] == sha256(code_harness.__file__) and

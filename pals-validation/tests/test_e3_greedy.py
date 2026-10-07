@@ -1,5 +1,6 @@
 """CPU-only contracts for greedy E3. No model generation or untrusted execution."""
 from copy import deepcopy
+from dataclasses import replace
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from pals_validation.e3 import greedy, greedy_data
+from pals_validation.e3.deployment import profile
 from pals_validation.e3.backend import generation_options, E3MockBackend
 from pals_validation.e3.fixture import prepare_fixture
 from pals_validation.e3.greedy_parse import parse
@@ -209,7 +211,7 @@ class SchedulerTests(unittest.TestCase):
                 self.assertEqual(command[0], "sbatch")
                 commands.append(command)
                 return str(100 + len(commands))
-            with patch.object(SUBMIT, "FENCE", fence), patch.object(SUBMIT, "load", return_value=(
+            with patch.object(SUBMIT, "profile", return_value=replace(profile(), root=str(fence))), patch.object(SUBMIT, "load", return_value=(
                     {"protocol_id": "test"}, None, None, None)), patch.object(
                     SUBMIT.subprocess, "check_output", side_effect=fake_command):
                 jobs = SUBMIT.submit(root, repo, prepared, "10")

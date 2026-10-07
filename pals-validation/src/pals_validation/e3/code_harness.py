@@ -266,13 +266,13 @@ def equal_lcb(actual, expected, io_type: str) -> bool:
 def grade_code_answer(problem: dict, gold: dict, code: str, scratch: Path) -> dict:
     """Grade only within a frozen Slurm CPU job; never on the login node."""
     from .code_tests import decode_lcb_tests
+    from .deployment import assert_project_path
     from ..io import digest
     if not os.environ.get("SLURM_JOB_ID") or os.environ.get("CUDA_VISIBLE_DEVICES"):
         raise RuntimeError("Code grading requires a GPU-free Slurm CPU allocation")
-    fence = Path("/work/projects/polyullm/xxj/PALS").resolve(strict=True)
-    scratch = scratch.resolve(strict=True)
-    if fence not in scratch.parents or not scratch.is_dir():
-        raise RuntimeError("Code grading scratch outside PALS")
+    assert_project_path(scratch)
+    if not scratch.is_dir():
+        raise RuntimeError("Code grading scratch is not a directory")
     code_sha256 = hashlib.sha256(code.encode()).hexdigest()
     try:
         static_check(code)
