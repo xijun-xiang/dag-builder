@@ -18,7 +18,7 @@ for path in "$PALS_ROOT" "$PALS_REPO" "$PALS_JOB_ROOT" "$PALS_PREPARED"; do
 done
 export PALS_EXPERIMENT="$PALS_JOB_ROOT/experiment"
 export PALS_COHORT="${PALS_COHORT:-original}"
-case "$PALS_COHORT" in original|extension) ;; *) exit 64 ;; esac
+case "$PALS_COHORT" in original|extension|extension-llama3|extension-internlm3) ;; *) exit 64 ;; esac
 export PALS_CONFIGS="${PALS_CONFIGS:-$PALS_ROOT/configs/e3/20261007-native-v2-format}"
 case "$PALS_CONFIGS" in "$PALS_ROOT"/configs/e3/*) ;; *) exit 64 ;; esac
 test "$(realpath "$PALS_CONFIGS")" = "$PALS_CONFIGS"

@@ -34,8 +34,14 @@ def model_slots(manifest):
     if manifest.get("protocol_version", VERSION) == VERSION:
         require("model_slots" not in manifest, "legacy cohort cannot be changed")
         return SLOTS
-    require(manifest.get("protocol_version") == extension.VERSION and
-            manifest.get("model_slots") == extension.SLOTS, "unknown extension cohort")
+    require(manifest.get("protocol_version") == extension.VERSION, "unknown extension cohort")
+    selected = manifest.get("deployment_slot")
+    if selected is not None:
+        require(selected in extension.SLOTS and
+                manifest.get("model_slots") == {selected: extension.SLOTS[selected]},
+                "invalid single-model deployment")
+        return {selected: extension.SLOTS[selected]}
+    require(manifest.get("model_slots") == extension.SLOTS, "unknown extension cohort")
     return extension.SLOTS
 
 
@@ -104,10 +110,13 @@ def batches_for(problems: list, config: dict) -> list:
     return [v[0] for v in grouped.values()] + [b for v in grouped.values() for b in v[1:]]
 
 
-def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_plan=None) -> dict:
+def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_plan=None,
+         deployment_slot=None) -> dict:
     meta, problems = greedy_data.validate(prepared)
-    expanded = set(configs) == set(extension.SLOTS)
-    slots = extension.SLOTS if expanded else SLOTS
+    require(deployment_slot is None or deployment_slot in extension.SLOTS, "unknown deployment slot")
+    expanded = deployment_slot is not None or set(configs) == set(extension.SLOTS)
+    slots = ({deployment_slot: extension.SLOTS[deployment_slot]} if deployment_slot is not None
+             else extension.SLOTS if expanded else SLOTS)
     require(set(configs) == set(slots), "exact legacy or extension cohort required")
     require(not expanded or recovery_plan is None, "extension cannot import old model runs")
     require(not output.exists(), "new run must not exist")
@@ -149,7 +158,9 @@ def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_pla
                      "primary": ["G", "M"], "auxiliary": ["NLL"],
                      "step_bins": [[2, 2], [3, 5], [6, None]]}}
     if expanded:
-        manifest["model_slots"] = dict(extension.SLOTS)
+        manifest["model_slots"] = dict(slots)
+    if deployment_slot is not None:
+        manifest["deployment_slot"] = deployment_slot
     if recovery_plan is not None:
         manifest["recovery"] = {"plan_sha256": digest(recovery_plan),
                                 "source_protocol_id": recovery_plan["source_protocol_id"]}

@@ -26,6 +26,9 @@ PROFILES = {
     "a1": ClusterProfile("a1", "/work/projects/polyullm/xxj/pals",
         "/cm/shared/apps/slurm/var/etc/slurm/slurm.conf", "/cm/shared/apps/slurm/current/bin",
         "a1-e3-greedy.sbatch", "pretrain"),
+    "b1-code-agent": ClusterProfile("b1-code-agent", "/work/projects/polyullm/xxj/PALS",
+        "/cm/shared/apps/slurm/etc/slurm/slurm.conf", "/cm/local/apps/slurm/current/bin",
+        "b1-e3-greedy.sbatch", "code-agent"),
 }
 
 

@@ -23,7 +23,7 @@ def main():
     p.add_argument("--configs", type=Path)
     p.add_argument("--selftest", type=Path)
     p.add_argument("--recover-from", type=Path, help="Read-only sealed v1 source; never regenerate existing output")
-    p.add_argument("--cohort", choices=("original", "extension"), default="original")
+    p.add_argument("--cohort", choices=("original", "extension", "extension-llama3", "extension-internlm3"), default="original")
     p.add_argument("--slot", choices=tuple(greedy.SLOTS) + tuple(extension.SLOTS))
     p.add_argument("--shard", type=int)
     p.add_argument("--deadline", type=float, default=float("inf"))
@@ -40,15 +40,18 @@ def main():
         require(check["status"] == "PASS" and check["isolation_probes_passed"] and
                 check["harness_sha256"] == sha256(code_harness.__file__) and
                 check["decoder_sha256"] == sha256(code_tests.__file__), "safety selftest differs")
-        slots = extension.SLOTS if args.cohort == "extension" else greedy.SLOTS
+        expanded = args.cohort != "original"
+        deployment_slot = args.cohort.removeprefix("extension-") if args.cohort.startswith("extension-") else None
+        slots = ({deployment_slot: extension.SLOTS[deployment_slot]} if deployment_slot is not None
+                 else extension.SLOTS if expanded else greedy.SLOTS)
         require(not args.recover_from or args.cohort == "original", "extension does not import legacy runs")
         configs = {slot: greedy.make_config(read(args.configs / (slot + ".json")),
-                   extension_slot=slot if args.cohort == "extension" else None) for slot in slots}
+                   extension_slot=slot if expanded else None) for slot in slots}
         for config in configs.values():
             greedy.validate_config(config)
             _model_files(config)
         architectures = {}
-        if args.cohort == "extension":
+        if expanded:
             from .cpu_compatibility import probe
             for slot, config in configs.items():
                 try:
@@ -87,7 +90,7 @@ def main():
                         violations.append({"problem_id": problem["problem_id"], "prompt_tokens": length,
                                            "reserved_output": budget})
             batch_budgets = []
-            if args.cohort == "extension":
+            if expanded:
                 for batch in greedy.batches_for(problems, config):
                     lengths = [all_lengths[i] for i in batch["problem_ids"]]
                     try:
@@ -99,7 +102,7 @@ def main():
                                            "prompt_lengths": lengths, "reason": str(exc)})
             context_checks[slot] = {"checked": len(problems), "max_prompt_tokens": maxima,
                                     "max_context": runtime["max_context"], "violations": violations}
-            if args.cohort == "extension":
+            if expanded:
                 context_checks[slot]["batch_budgets"] = batch_budgets
                 context_checks[slot]["cpu_architecture"] = architectures[slot]
         save(args.selftest.parent / "context-checks.json", context_checks)
@@ -114,7 +117,8 @@ def main():
             assert_project_path(args.recover_from)
             from .greedy_recovery import plan, import_sealed
             recovery_plan = plan(args.recover_from)
-        result = greedy.init(args.prepared, configs, policy, args.root, recovery_plan=recovery_plan)
+        result = greedy.init(args.prepared, configs, policy, args.root, recovery_plan=recovery_plan,
+                             deployment_slot=deployment_slot)
         if args.recover_from:
             import_sealed(args.recover_from, args.root, recovery_plan)
         save(args.selftest.parent / "init.json", {"status": "PASS", "job_id": os.environ["SLURM_JOB_ID"],
