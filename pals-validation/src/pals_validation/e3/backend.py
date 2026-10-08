@@ -8,6 +8,7 @@ from ..backend import HFBackend
 from ..metrics import pair
 from .protocol import messages, parse_trace
 from .schema import require
+from .greedy_extension import generation_budget
 
 
 def generation_options(cfg: dict) -> dict:
@@ -86,8 +87,8 @@ class E3HFBackend(HFBackend):
                 "generation batch repeats a question")
         prompts = [self.base_prompt(problem) for problem in problems]
         ids = [self.tokenizer.encode(prompt, add_special_tokens=False) for prompt in prompts]
-        budget = self.e3_config["generation"]["max_new_tokens"][
-            "code" if problems[0]["benchmark"] in ("humaneval", "livecodebench") else "knowledge_math"]
+        budget_info = generation_budget(self.e3_config, problems[0]["benchmark"], list(map(len, ids)))
+        budget = budget_info["effective_max_new_tokens"]
         require(all((problem["benchmark"] in ("humaneval", "livecodebench")) ==
                     (problems[0]["benchmark"] in ("humaneval", "livecodebench"))
                     for problem in problems), "batch mixes output budgets")
@@ -131,11 +132,14 @@ class E3HFBackend(HFBackend):
                          "prompt_token_ids": ids[index], "prompt_width": width,
                          "left_pad_tokens": width - len(ids[index]),
                          "stop_token_length": cut})
-        return {"seed": seed, "batch_size": len(rows), "rows": rows,
+        output = {"seed": seed, "batch_size": len(rows), "rows": rows,
                 "generation_contract": {"boundary": "</answer>", "max_new_tokens": budget,
                     "max_context": self.config["max_context"], "eos_token_ids": eos_ids,
                     "pad_token_id": pad, "constrained_decoding": False,
                     "decoding": generation_options(cfg)}}
+        if "budget_policy" in self.e3_config:
+            output["generation_contract"]["budget"] = budget_info
+        return output
 
 
 class E3MockBackend:
@@ -174,6 +178,17 @@ class E3MockBackend:
                          "prompt": self.base_prompt(problem), "prompt_token_ids": [],
                          "prompt_width": 0, "left_pad_tokens": 0,
                          "stop_token_length": len(raw.encode())})
-        return {"seed": seed, "batch_size": len(rows), "rows": rows,
+        output = {"seed": seed, "batch_size": len(rows), "rows": rows,
                 "generation_contract": {"boundary": "</answer>",
                                         "constrained_decoding": False, "synthetic": True}}
+        if "budget_policy" in self.config:
+            for row in rows:
+                row["prompt_token_ids"] = list(row["prompt"].encode())
+            budget = generation_budget(self.config, problems[0]["benchmark"],
+                                       [len(r["prompt_token_ids"]) for r in rows])
+            for row in rows:
+                row.update(prompt_width=budget["prompt_width"],
+                           left_pad_tokens=budget["prompt_width"] - len(row["prompt_token_ids"]))
+            output["generation_contract"].update(budget=budget,
+                max_new_tokens=budget["effective_max_new_tokens"], max_context=budget["max_context"])
+        return output

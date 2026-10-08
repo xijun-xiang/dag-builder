@@ -197,6 +197,8 @@ class SchedulerTests(unittest.TestCase):
             for path in (root, repo, prepared):
                 path.mkdir()
             (root / "preflight").mkdir()
+            (root / "experiment").mkdir()
+            save(root / "experiment/manifest.json", {"protocol_id": "test"})
             save(root / "preflight/selftest.json", {"status": "PASS"})
             save(root / "preflight/context-checks.json", {})
             save(root / "preflight/init.json", {"status": "PASS", "job_id": "10", "run": str(root / "experiment"),

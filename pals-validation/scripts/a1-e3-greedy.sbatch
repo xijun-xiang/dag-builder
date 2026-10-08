@@ -17,6 +17,11 @@ for path in "$PALS_ROOT" "$PALS_REPO" "$PALS_JOB_ROOT" "$PALS_PREPARED"; do
   test "$(realpath "$path")" = "$path"
 done
 export PALS_EXPERIMENT="$PALS_JOB_ROOT/experiment"
+export PALS_COHORT="${PALS_COHORT:-original}"
+case "$PALS_COHORT" in original|extension) ;; *) exit 64 ;; esac
+export PALS_CONFIGS="${PALS_CONFIGS:-$PALS_ROOT/configs/e3/20261007-native-v2-format}"
+case "$PALS_CONFIGS" in "$PALS_ROOT"/configs/e3/*) ;; *) exit 64 ;; esac
+test "$(realpath "$PALS_CONFIGS")" = "$PALS_CONFIGS"
 export SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 export PATH=/cm/shared/apps/slurm/current/bin:$PATH
 export ENROOT_CACHE_PATH="$PALS_JOB_ROOT/scratch/enroot-cache"
@@ -58,7 +63,7 @@ if [ "$PALS_STAGE" = init ]; then
     recovery_args=(--recover-from "$PALS_RECOVERY_SOURCE")
   fi
   python3 -m pals_validation.e3.greedy_cli init --root "$PALS_EXPERIMENT" --prepared "$PALS_PREPARED" \
-   --configs /work/projects/polyullm/xxj/pals/configs/e3/20261007-native-v2-format --selftest "$PALS_HARNESS_RUN/selftest.json" "${recovery_args[@]}"
+   --configs "$PALS_CONFIGS" --cohort "$PALS_COHORT" --selftest "$PALS_HARNESS_RUN/selftest.json" "${recovery_args[@]}"
 else
   test "$(realpath "$PALS_EXPERIMENT")" = "$PALS_EXPERIMENT"
   python3 "$PALS_REPO/scripts/e3_greedy_launch.py"

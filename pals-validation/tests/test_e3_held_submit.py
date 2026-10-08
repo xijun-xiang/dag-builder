@@ -24,6 +24,8 @@ class HeldTests(unittest.TestCase):
             for p in (root, repo, prepared, root / 'preflight'):
                 p.mkdir()
             save(root / 'preflight/selftest.json', {'status': 'PASS'})
+            (root / 'experiment').mkdir()
+            save(root / 'experiment/manifest.json', {'protocol_id': 'test'})
             save(root / 'preflight/context-checks.json', {})
             save(root / 'preflight/init.json', {'status': 'PASS', 'job_id': '10',
                 'run': str(root / 'experiment'), 'protocol_id': 'test',

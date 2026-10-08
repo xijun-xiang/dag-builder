@@ -1,4 +1,4 @@
-"""Submit the three full GPU/CPU chains once, after a successful CPU init.
+"""Submit the frozen cohort's GPU/CPU chains once, after a successful CPU init.
 
 At most one 8-GPU job can be active: the next model depends on the preceding
 model's CPU audit. All jobs are submitted held and explicitly verified before release.
@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from pals_validation.e3.greedy import SLOTS, load
+from pals_validation.e3.greedy import model_slots, load
 from pals_validation.e3.deployment import profile
 from pals_validation.e3.schema import require
 from pals_validation.io import read, save, sha256
@@ -67,7 +67,10 @@ def preflight(root, repo, prepared, init_job):
     completed(init_job)
     require(not subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"], text=True).strip(), "dirty frozen code")
     run = root / "experiment"
-    manifest, _, _, _ = load(run, "qwen25")
+    slots = model_slots(read(run / "manifest.json"))
+    manifest, _, _, _ = load(run, next(iter(slots)))
+    for slot in slots:
+        load(run, slot)
     require(read(root / "preflight/selftest.json")["status"] == "PASS", "safety preflight missing")
     receipt = read(root / "preflight/init.json")
     require(receipt == {"status": "PASS", "job_id": init_job, "run": str(run),
@@ -87,7 +90,7 @@ def submit(root: Path, repo: Path, prepared: Path, init_job: str, exclude_nodes=
         require(not any(n.startswith(("e3g-", "e3c-", "e3x-")) for n in active), "another E3 job is active")
         save(ledger / "scheduler-options.json", {"version": "explicit-held-v1", "excluded_nodes": list(excluded)})
         previous, jobs = None, []
-        for slot in SLOTS:
+        for slot in model_slots(manifest):
             for stage in ("gpu", "evaluate"):
                 name = f"e3g-{slot}-{stage}"
                 command = command_for(root, repo, slot, stage, previous, excluded)
@@ -153,9 +156,10 @@ def verify_chain(root, repo, prepared, init_job):
     excluded = exclusions(options["excluded_nodes"])
     require(options == {"version": "explicit-held-v1", "excluded_nodes": list(excluded)}, "scheduler options changed")
     jobs = read(ledger / "full-chain.json")
-    require([(j["slot"], j["stage"]) for j in jobs] == [(s, t) for s in SLOTS for t in ("gpu", "evaluate")], "incomplete job chain")
+    slots = model_slots(manifest)
+    require([(j["slot"], j["stage"]) for j in jobs] == [(s, t) for s in slots for t in ("gpu", "evaluate")], "incomplete job chain")
     ids = {j["job_id"] for j in jobs}
-    require(len(ids) == 6, "duplicate job IDs")
+    require(len(ids) == 2 * len(slots), "duplicate job IDs")
     snapshots, previous = {}, None
     for record in jobs:
         require(record["protocol_id"] == manifest["protocol_id"], "job protocol differs")

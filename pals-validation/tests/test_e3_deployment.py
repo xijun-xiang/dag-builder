@@ -58,6 +58,8 @@ class DeploymentTests(unittest.TestCase):
             for path in (root, repo, prepared, root / 'preflight'):
                 path.mkdir()
             save(root / 'preflight/selftest.json', {'status': 'PASS'})
+            (root / 'experiment').mkdir()
+            save(root / 'experiment/manifest.json', {'protocol_id': 'test'})
             save(root / 'preflight/context-checks.json', {})
             save(root / 'preflight/init.json', {'status': 'PASS', 'job_id': '10', 'run': str(root / 'experiment'),
                 'protocol_id': 'test', 'selftest_sha256': sha256(root / 'preflight/selftest.json'),

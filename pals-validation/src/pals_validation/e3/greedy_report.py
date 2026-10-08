@@ -5,7 +5,7 @@ from pathlib import Path
 from statistics import fmean
 
 from ..io import read, save, sha256, verify
-from .greedy import SLOTS, load
+from .greedy import model_slots, load
 from .schema import require
 
 METRICS = ("G", "M", "NLL")
@@ -34,6 +34,10 @@ def group_summary(rows, **labels):
         "invalid_reasons": dict(Counter(r["process_reason"] for r in rows if not r["process_valid"])),
         "step_count_distribution": dict(Counter(r["step_count"] for r in rows)),
         "outcome_statuses": dict(Counter(r["outcome_status"] for r in rows)),
+        "length_terminations": sum(r.get("finish_reason") == "length" for r in rows),
+        "context_capped": sum(r.get("generation_budget", {}).get("context_capped", False) for r in rows),
+        "output_budget_distribution": dict(Counter(r["generation_budget"]["effective_max_new_tokens"]
+                                                    for r in rows if "generation_budget" in r)),
         "answer_decided": len(decided), "accuracy": fmean(decided) if decided else None,
         **{metric: estimate([r["summary"][metric] for r in valid]) for metric in METRICS}}
 
@@ -41,7 +45,8 @@ def group_summary(rows, **labels):
 def summarize(root: Path, output: Path):
     require(output is not None and not output.exists(), "new output directory required")
     models, hashes, protocol_id = {}, {}, None
-    for slot in SLOTS:
+    slots = model_slots(read(root / "manifest.json"))
+    for slot in slots:
         manifest, _, _, _ = load(root, slot)
         protocol_id = protocol_id or manifest["protocol_id"]
         require(manifest["protocol_id"] == protocol_id, "different protocol")
@@ -56,27 +61,32 @@ def summarize(root: Path, output: Path):
     for slot, rows in models.items():
         for benchmark in sorted(manifest["counts"]):
             group = [r for r in rows if r["benchmark"] == benchmark]
-            primary.append(group_summary(group, model=SLOTS[slot], benchmark=benchmark))
+            primary.append(group_summary(group, model=slots[slot], benchmark=benchmark))
+            for label, predicate in (("exclude_title_body_recovery", lambda r:
+                    "title_and_body_explicit_boundary" not in r["segmentation_methods"]),
+                    ("exclude_length_terminations", lambda r: r["finish_reason"] != "length")):
+                sensitivity.append(group_summary([r for r in group if predicate(r)],
+                    model=slots[slot], benchmark=benchmark, population=label))
             for label, predicate in (("two_steps", lambda r: r["step_count"] == 2),
                                      ("three_to_five", lambda r: 3 <= r["step_count"] <= 5),
                                      ("six_or_more", lambda r: r["step_count"] >= 6)):
                 sensitivity.append(group_summary([r for r in group if predicate(r)],
-                                                  model=SLOTS[slot], benchmark=benchmark, step_bin=label))
+                                                  model=slots[slot], benchmark=benchmark, step_bin=label))
         for subject in sorted({r["subset"] for r in rows if r["benchmark"] == "mmlu"}):
             subjects.append(group_summary([r for r in rows if r["benchmark"] == "mmlu" and r["subset"] == subject],
-                                          model=SLOTS[slot], subject=subject))
+                                          model=slots[slot], subject=subject))
     for benchmark in sorted(manifest["counts"]):
         by_model = {slot: {r["problem_id"]: r for r in rows if r["benchmark"] == benchmark and
                           r["summary"] and r["summary"]["G"] is not None} for slot, rows in models.items()}
         common = sorted(set.intersection(*(set(rows) for rows in by_model.values())))
         for slot, rows in by_model.items():
-            paired.append(group_summary([rows[i] for i in common], model=SLOTS[slot], benchmark=benchmark,
-                                        population="three_model_common_valid"))
+            paired.append(group_summary([rows[i] for i in common], model=slots[slot], benchmark=benchmark,
+                                        population="cohort_common_valid", models_in_cohort=len(slots)))
     macro = []
-    for slot in SLOTS:
-        per_subject = [r for r in subjects if r["model"] == SLOTS[slot]]
+    for slot in slots:
+        per_subject = [r for r in subjects if r["model"] == slots[slot]]
         # Explicit subject-weighted point estimates. No subject-as-question bootstrap.
-        macro.append({"model": SLOTS[slot], "subjects_total": len(per_subject),
+        macro.append({"model": slots[slot], "subjects_total": len(per_subject),
             "subjects_scoreable": sum(r["scoreable"] > 0 for r in per_subject),
             **{m: fmean(r[m]["mean"] for r in per_subject if r[m]["mean"] is not None)
                if any(r[m]["mean"] is not None for r in per_subject) else None for m in METRICS}})
@@ -96,7 +106,7 @@ def summarize(root: Path, output: Path):
         writer.writeheader()
         for slot, rows in models.items():
             for row in rows:
-                writer.writerow({"model": SLOTS[slot], **{k: row[k] for k in ("problem_id", "benchmark", "subset",
+                writer.writerow({"model": slots[slot], **{k: row[k] for k in ("problem_id", "benchmark", "subset",
                     "process_valid", "process_reason", "step_count", "correct", "outcome_status")},
                     "mean_step_tokens": fmean(row["step_token_lengths"]) if row["step_token_lengths"] else None,
                     **{m: row["summary"][m] if row["summary"] else None for m in METRICS}})

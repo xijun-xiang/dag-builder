@@ -14,6 +14,7 @@ from ..io import digest, read, save, sha256, verify
 from ..locking import exclusive_lock
 from ..metrics import pair
 from . import greedy_data
+from . import greedy_extension as extension
 from .audit import _score_matches, token_encoder
 from .backend import E3HFBackend, E3MockBackend, generation_options
 from .evaluate import evaluate_answer
@@ -29,20 +30,36 @@ SLOTS = {"qwen25": "Qwen2.5-7B-Instruct", "phi4mini": "Phi-4-mini-instruct", "qw
 PUBLIC_COUNTS = greedy_data.COUNTS
 
 
-def make_config(old: dict) -> dict:
+def model_slots(manifest):
+    if manifest.get("protocol_version", VERSION) == VERSION:
+        require("model_slots" not in manifest, "legacy cohort cannot be changed")
+        return SLOTS
+    require(manifest.get("protocol_version") == extension.VERSION and
+            manifest.get("model_slots") == extension.SLOTS, "unknown extension cohort")
+    return extension.SLOTS
+
+
+def make_config(old: dict, extension_slot=None) -> dict:
     config = {k: deepcopy(old[k]) for k in ("backend", "model", "hf_runtime", "generation", "scoring")}
     config.update(protocol_version=VERSION, prompt_version="native-greedy-prompt-v1",
                   parser_version=PARSER_VERSION, shards=8, automatic_generation_retries=0)
     config["generation"].update(temperature=0., do_sample=False)
+    if extension_slot is not None:
+        require(extension_slot in extension.SLOTS, "unknown extension slot")
+        config["protocol_version"] = extension.VERSION
+        config["budget_policy"] = extension.budget_policy(extension_slot)
     return config
 
 
 def validate_config(config: dict):
+    expanded = config.get("protocol_version") == extension.VERSION
     require(set(config) == {"backend", "model", "hf_runtime", "generation", "scoring",
-            "protocol_version", "prompt_version", "parser_version", "shards", "automatic_generation_retries"}, "config fields")
-    require(config["protocol_version"] == VERSION and config["prompt_version"] == "native-greedy-prompt-v1"
+            "protocol_version", "prompt_version", "parser_version", "shards", "automatic_generation_retries"}
+            | ({"budget_policy"} if expanded else set()), "config fields")
+    require(config["protocol_version"] in (VERSION, extension.VERSION) and config["prompt_version"] == "native-greedy-prompt-v1"
             and config["parser_version"] == PARSER_VERSION, "greedy protocol changed")
-    require(config["backend"] in ("hf", "mock") and config["model"]["id"] in SLOTS.values(), "model/backend")
+    require(config["backend"] in ("hf", "mock") and config["model"]["id"] in
+            (extension.SLOTS if expanded else SLOTS).values(), "model/backend")
     require(config["generation"] == {"samples_per_question": 1, "temperature": 0., "do_sample": False,
             "top_p": 1., "top_k": 0, "repetition_penalty": 1., "num_beams": 1, "batch_size": 8,
             "max_new_tokens": {"knowledge_math": 8192, "code": 16384}, "master_seed": 2026092903}, "generation changed")
@@ -50,6 +67,13 @@ def validate_config(config: dict):
     require(config["shards"] == 8 and config["automatic_generation_retries"] == 0, "execution changed")
     if config["model"]["id"] == SLOTS["qwen3"]:
         require(config["hf_runtime"]["chat_template_kwargs"] == {"enable_thinking": False}, "thinking mode changed")
+    if expanded:
+        slot = next(s for s, name in extension.SLOTS.items() if name == config["model"]["id"])
+        require(config["budget_policy"] == extension.budget_policy(slot), "extension budget changed")
+        require(config["hf_runtime"]["max_context"] == extension.CONTEXTS[slot] and
+                config["hf_runtime"]["chat_template_kwargs"] == {}, "extension context/template changed")
+        if config["backend"] == "hf":
+            require(config["model"]["revision"] == extension.REVISIONS[slot], "extension revision changed")
 
 
 def implementation_hashes():
@@ -82,11 +106,15 @@ def batches_for(problems: list, config: dict) -> list:
 
 def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_plan=None) -> dict:
     meta, problems = greedy_data.validate(prepared)
-    require(set(configs) == set(SLOTS), "exactly three models required")
+    expanded = set(configs) == set(extension.SLOTS)
+    slots = extension.SLOTS if expanded else SLOTS
+    require(set(configs) == set(slots), "exact legacy or extension cohort required")
+    require(not expanded or recovery_plan is None, "extension cannot import old model runs")
     require(not output.exists(), "new run must not exist")
     for slot, config in configs.items():
         validate_config(config)
-        require(config["model"]["id"] == SLOTS[slot] and
+        require(config["protocol_version"] == (extension.VERSION if expanded else VERSION) and
+                config["model"]["id"] == slots[slot] and
                 (config["backend"] == "hf") == meta["scientific_evidence"], "model/data mismatch")
     output.mkdir(mode=0o700, parents=True)
     for name in ("inputs", "grading", "logs", "submissions", "scratch"):
@@ -111,7 +139,8 @@ def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_pla
         if config["backend"] == "hf":
             save(folder / "model-files.json", read(config["model"]["files_manifest"]))
             files[f"{slot}/model-files.json"] = sha256(folder / "model-files.json")
-    manifest = {"protocol_version": VERSION, "files": files, "code_hashes": implementation_hashes(),
+    manifest = {"protocol_version": extension.VERSION if expanded else VERSION,
+        "files": files, "code_hashes": implementation_hashes(),
         "deployment": profile().record(),
         "scientific_evidence": meta["scientific_evidence"], "counts": meta["counts"],
         "initial_batches": len(meta["counts"]), "generation_attempts_per_question": 1,
@@ -119,6 +148,8 @@ def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_pla
         "analysis": {"bootstrap_draws": 5000, "seed": 2026100601,
                      "primary": ["G", "M"], "auxiliary": ["NLL"],
                      "step_bins": [[2, 2], [3, 5], [6, None]]}}
+    if expanded:
+        manifest["model_slots"] = dict(extension.SLOTS)
     if recovery_plan is not None:
         manifest["recovery"] = {"plan_sha256": digest(recovery_plan),
                                 "source_protocol_id": recovery_plan["source_protocol_id"]}
@@ -129,9 +160,10 @@ def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_pla
 
 
 def load(root: Path, slot: str):
-    require(slot in SLOTS and not root.is_symlink(), "invalid run/slot")
+    require(not root.is_symlink(), "invalid run")
     manifest = read(root / "manifest.json")
-    require(manifest["protocol_version"] == VERSION and manifest["protocol_id"] ==
+    require(slot in model_slots(manifest), "invalid run/slot")
+    require(manifest["protocol_id"] ==
             digest({k: v for k, v in manifest.items() if k != "protocol_id"}), "protocol changed")
     verify(root, manifest["files"])
     require(manifest["code_hashes"] == implementation_hashes(), "frozen code changed")
@@ -141,6 +173,8 @@ def load(root: Path, slot: str):
         validate_ready(root, manifest)
     config = read(root / slot / "config.json")
     validate_config(config)
+    require(config["protocol_version"] == manifest["protocol_version"] and
+            config["model"]["id"] == model_slots(manifest)[slot], "model/cohort mismatch")
     problems = read(root / "inputs/problems.json")
     for problem in problems:
         validate_problem(problem)
@@ -392,6 +426,9 @@ def audit(root: Path, slot: str, include_outcomes=True):
     for batch in batches:
         raw_path = folder / "raw" / (batch["batch_id"] + ".json")
         raw = raw_batch(folder, batch, protocol_id)
+        budget = None
+        if config["protocol_version"] == extension.VERSION:
+            budget = extension.verify_budget(config, batch, raw["output"])
         attempt = read(folder / "attempts" / raw_path.name)
         require(attempt["batch"] == batch and attempt["protocol_id"] == protocol_id, "attempt identity changed")
         for generated in raw["output"]["rows"]:
@@ -426,6 +463,9 @@ def audit(root: Path, slot: str, include_outcomes=True):
                 "step_count": len(parsed["steps"]), "step_token_lengths": [len(encode(s["text"])) for s in parsed["steps"]],
                 "segmentation_methods": parsed["segmentation_methods"], "finish_reason": generated["finish_reason"],
                 "summary": saved["summary"], "correct": outcome["correct"], "outcome_status": outcome["status"]})
+            if budget is not None:
+                rows[-1]["generation_budget"] = {**budget, "generated_tokens": len(generated["generated_token_ids"]),
+                    "hit_limit": generated["finish_reason"] == "length"}
         for name in ("raw", "receipts", "attempts"):
             path = folder / name / raw_path.name
             hashes[str(path.relative_to(folder))] = sha256(path)
