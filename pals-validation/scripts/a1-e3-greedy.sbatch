@@ -38,6 +38,13 @@ end_time=$(scontrol show job "$SLURM_JOB_ID" -o | tr ' ' '\n' | sed -n 's/^EndTi
 export PALS_DEADLINE=$(( $(date -d "$end_time" +%s) - 3600 ))
 cd "$PALS_JOB_ROOT"
 recovery_mount=""
+if [ -n "${PALS_FULL_CONTINUATION_SOURCE:-}" ]; then
+  test -z "${PALS_RECOVERY_SOURCE:-}"
+  case "$PALS_FULL_CONTINUATION_SOURCE" in "$PALS_ROOT"/runs/*/experiment) ;; *) exit 64 ;; esac
+  test "$(realpath "$PALS_FULL_CONTINUATION_SOURCE")" = "$PALS_FULL_CONTINUATION_SOURCE"
+  test "$PALS_FULL_CONTINUATION_SOURCE" != "$PALS_EXPERIMENT"
+  recovery_mount=",$PALS_FULL_CONTINUATION_SOURCE:$PALS_FULL_CONTINUATION_SOURCE:ro"
+fi
 if [ -n "${PALS_RECOVERY_SOURCE:-}" ]; then
   case "$PALS_RECOVERY_SOURCE" in "$PALS_ROOT"/runs/*/experiment) ;; *) exit 64 ;; esac
   test "$(realpath "$PALS_RECOVERY_SOURCE")" = "$PALS_RECOVERY_SOURCE"
@@ -61,6 +68,9 @@ if [ "$PALS_STAGE" = init ]; then
   recovery_args=()
   if [ -n "${PALS_RECOVERY_SOURCE:-}" ]; then
     recovery_args=(--recover-from "$PALS_RECOVERY_SOURCE")
+  fi
+  if [ -n "${PALS_FULL_CONTINUATION_SOURCE:-}" ]; then
+    recovery_args=(--continue-full-from "$PALS_FULL_CONTINUATION_SOURCE")
   fi
   python3 -m pals_validation.e3.greedy_cli init --root "$PALS_EXPERIMENT" --prepared "$PALS_PREPARED" \
    --configs "$PALS_CONFIGS" --cohort "$PALS_COHORT" --selftest "$PALS_HARNESS_RUN/selftest.json" "${recovery_args[@]}"

@@ -99,6 +99,12 @@ def summarize(root: Path, output: Path):
                   "NLL covers the same target steps as g, not the whole generated output.",
                   "CIs resample questions, not repeated generations.",
                   "Historical CoEvalChain results are separate measurements; no automatic matching of incompatible scopes."]}
+    if "full_continuation" in manifest:
+        result["continuation"] = manifest["full_continuation"]
+        result["notes"] += ["Coverage is report-only by prior authorization; PASS means integrity, not high coverage.",
+            "Undefined scores are N/A, never zero. AS/NS and their CIs describe scoreable outputs only.",
+            "Source attempts without sealed raw are infrastructure N/A and are never regenerated.",
+            "Fixed batch membership, seeds, prompts, budgets and v2 parser are unchanged; worker dispatch changed."]
     save(output / "summary.json", result)
     with (output / "questions.csv").open("x", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=["model", "problem_id", "benchmark", "subset", "process_valid",
@@ -119,5 +125,9 @@ def summarize(root: Path, output: Path):
         lines.append(f"| {r['benchmark']} | {r['model']} | {r['scoreable']}/{r['total']} | {fmt(r['G'])} | {fmt(r['M'])} | {accuracy} |")
     lines += ["", "MMLU 主表暂列题目等权汇总；57 子集及子集等权值见 summary.json。与历史主表合并前必须核对其汇总口径。",
               "无效原因、一步轨迹、步骤粒度、共同有效题集和不利结果均保留。当前不伪造或代填历史 CoEvalChain 数值。"]
+    if "full_continuation" in manifest:
+        lines += ["", "本轮按预先授权采用全分母报告：格式覆盖率不作为停跑门槛。审计 PASS 只表示完整性通过，",
+                  "不表示模型覆盖率高。AS/NS 及区间仅描述可评分轨迹，不能推广到被排除的无效轨迹。",
+                  "原始中断且无完整输出的题目记基础设施 N/A，不重新生成；与模型格式失败分开统计。"]
     (output / "报告.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"status": "PASS", "primary_rows": len(primary), "output": str(output)}

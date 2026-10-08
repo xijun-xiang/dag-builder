@@ -111,7 +111,7 @@ def batches_for(problems: list, config: dict) -> list:
 
 
 def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_plan=None,
-         deployment_slot=None) -> dict:
+         deployment_slot=None, continuation_plan=None) -> dict:
     meta, problems = greedy_data.validate(prepared)
     require(deployment_slot is None or deployment_slot in extension.SLOTS, "unknown deployment slot")
     expanded = deployment_slot is not None or set(configs) == set(extension.SLOTS)
@@ -119,6 +119,8 @@ def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_pla
              else extension.SLOTS if expanded else SLOTS)
     require(set(configs) == set(slots), "exact legacy or extension cohort required")
     require(not expanded or recovery_plan is None, "extension cannot import old model runs")
+    require(continuation_plan is None or (deployment_slot is not None and recovery_plan is None and
+            continuation_plan["slot"] == deployment_slot), "invalid full continuation")
     require(not output.exists(), "new run must not exist")
     for slot, config in configs.items():
         validate_config(config)
@@ -164,6 +166,9 @@ def init(prepared: Path, configs: dict, policy: dict, output: Path, recovery_pla
     if recovery_plan is not None:
         manifest["recovery"] = {"plan_sha256": digest(recovery_plan),
                                 "source_protocol_id": recovery_plan["source_protocol_id"]}
+    if continuation_plan is not None:
+        from .full_continuation import binding
+        manifest["full_continuation"] = binding(continuation_plan)
     manifest["protocol_id"] = digest(manifest)
     save(output / "manifest.json", manifest)
     return {"protocol_id": manifest["protocol_id"], "counts": meta["counts"],
@@ -181,6 +186,9 @@ def load(root: Path, slot: str):
     require(manifest["deployment"] == profile().record(), "deployment profile changed")
     if "recovery" in manifest:
         from .greedy_recovery import validate_ready
+        validate_ready(root, manifest)
+    if "full_continuation" in manifest:
+        from .full_continuation import validate_ready
         validate_ready(root, manifest)
     config = read(root / slot / "config.json")
     validate_config(config)
@@ -267,6 +275,18 @@ def raw_batch(folder: Path, batch: dict, protocol_id: str) -> dict:
 def process_batch(root: Path, slot: str, batch: dict, backend, manifest, problems) -> list:
     folder = root / slot
     bid, protocol_id = batch["batch_id"], manifest["protocol_id"]
+    from .full_continuation import missing_batches, missing_rows, missing_score
+    if bid in missing_batches(root, slot, manifest):
+        rows = missing_rows(root, slot, batch, manifest)
+        source_hash = sha256(folder / "unavailable" / (bid + ".json"))
+        for row in rows:
+            path = folder / "scores" / (digest(row["problem_id"]) + ".json")
+            expected = missing_score(manifest, batch, row["problem_id"], source_hash)
+            if path.exists():
+                require(read(path) == expected, "missing-score record changed")
+            else:
+                save(path, expected)
+        return rows
     attempt, raw_path = folder / "attempts" / (bid + ".json"), folder / "raw" / (bid + ".json")
     selected = [problems[i] for i in batch["problem_ids"]]
     if not raw_path.exists():
@@ -339,6 +359,9 @@ def gpu_worker(root: Path, slot: str, shard: int, deadline: float = float("inf")
         receipt = reference(backend, next(iter(problems.values())), manifest["protocol_id"])
         run_id = os.environ.get("SLURM_JOB_ID", "mock")
         save(root / slot / "workers" / f"reference-{run_id}-{shard}.json", receipt)
+        if "full_continuation" in manifest:
+            from .full_continuation import gpu_work
+            return gpu_work(root, slot, shard, backend, manifest, problems, batches, deadline, barrier)
         own = [(i, b) for i, b in enumerate(batches) if i % 8 == shard]
         recent = {}
         for initial in (True, False):
@@ -383,6 +406,8 @@ def evaluate(root: Path, slot: str, shard: int):
                 "CPU evaluation boundary")
         assert_project_path(root)
     folder = root / slot
+    from .full_continuation import missing_batches, missing_rows, missing_outcome
+    unavailable = missing_batches(root, slot, manifest)
     gold = read(root / "grading/answers.json")
     policy = read(root / "grading/policy.json")
     scratch = folder / "scratch" / f"cpu-{shard}"
@@ -390,6 +415,17 @@ def evaluate(root: Path, slot: str, shard: int):
     with exclusive_lock(folder / "locks" / f"evaluate-{shard}.lock"):
         for index, batch in enumerate(batches):
             if index % 8 != shard:
+                continue
+            if batch["batch_id"] in unavailable:
+                missing_rows(root, slot, batch, manifest)
+                source_hash = sha256(folder / "unavailable" / (batch["batch_id"] + ".json"))
+                for item in batch["problem_ids"]:
+                    path = folder / "outcomes" / (digest(item) + ".json")
+                    expected = missing_outcome(manifest, item, source_hash)
+                    if path.exists():
+                        require(read(path) == expected, "missing-outcome record changed")
+                    else:
+                        save(path, expected)
                 continue
             raw = raw_batch(folder, batch, manifest["protocol_id"])
             for row in raw["output"]["rows"]:
@@ -415,6 +451,15 @@ def audit(root: Path, slot: str, include_outcomes=True):
     if "recovery" in manifest:
         from .greedy_recovery import verify_imports
         verify_imports(root, slot, manifest)
+    from . import full_continuation as continuation
+    continued = "full_continuation" in manifest
+    unavailable = continuation.missing_batches(root, slot, manifest)
+    assignments = None
+    if continued:
+        continuation.verify_imports(root, slot, manifest)
+        assignments = continuation.verify_dispatch(folder, batches, manifest)
+        require({p.stem for p in (folder / "unavailable").glob("*.json")} == unavailable,
+                "unavailable denominator differs")
     encode = token_encoder(config)
     tokenizer = None
     if config["backend"] == "hf":
@@ -423,7 +468,7 @@ def audit(root: Path, slot: str, include_outcomes=True):
         tokenizer = AutoTokenizer.from_pretrained(config["model"]["path"], local_files_only=True,
             trust_remote_code=local_code_policy(config["model"]["path"],
                 {**config["hf_runtime"], "model_revision": config["model"]["revision"]}))
-    expected_batches = {b["batch_id"] + ".json" for b in batches}
+    expected_batches = {b["batch_id"] + ".json" for b in batches if b["batch_id"] not in unavailable}
     expected_items = {digest(i) + ".json" for i in problems}
     for name, expected in (("attempts", expected_batches), ("raw", expected_batches),
                            ("receipts", expected_batches), ("scores", expected_items)):
@@ -435,13 +480,36 @@ def audit(root: Path, slot: str, include_outcomes=True):
         completions = sorted((folder / "workers").glob(f"gpu-complete-*-{shard}.json"))
         require(len(completions) == 1, "missing/ambiguous GPU worker completion")
         completion = completions[0]
-        require(read(completion) == {"status": "PASS", "protocol_id": protocol_id,
-                "batches": sum(i % 8 == shard for i in range(len(batches)))}, "worker completion differs")
+        expected = {"status": "PASS", "protocol_id": protocol_id}
+        expected.update({"batch_indices": assignments[shard]} if continued else
+                        {"batches": sum(i % 8 == shard for i in range(len(batches)))})
+        require(read(completion) == expected, "worker completion differs")
         reference_path = completion.with_name(completion.name.replace("gpu-complete-", "reference-", 1))
         verify_reference(read(reference_path), protocol_id, config["backend"] == "hf")
         for path in (completion, reference_path):
             hashes[str(path.relative_to(folder))] = sha256(path)
     for batch in batches:
+        if batch["batch_id"] in unavailable:
+            continuation.missing_rows(root, slot, batch, manifest)
+            path = folder / "unavailable" / (batch["batch_id"] + ".json")
+            source_hash = sha256(path)
+            hashes[str(path.relative_to(folder))] = source_hash
+            for item in batch["problem_ids"]:
+                score_path = folder / "scores" / (digest(item) + ".json")
+                require(read(score_path) == continuation.missing_score(manifest, batch, item, source_hash),
+                        "unavailable score changed")
+                hashes[str(score_path.relative_to(folder))] = sha256(score_path)
+                if include_outcomes:
+                    outcome_path = folder / "outcomes" / score_path.name
+                    require(read(outcome_path) == continuation.missing_outcome(manifest, item, source_hash),
+                            "unavailable outcome changed")
+                    hashes[str(outcome_path.relative_to(folder))] = sha256(outcome_path)
+                problem = problems[item]
+                rows.append({"problem_id": item, "benchmark": problem["benchmark"], "subset": problem["subset"],
+                    "process_valid": False, "process_reason": "infrastructure_interrupted_na", "step_count": 0,
+                    "step_token_lengths": [], "segmentation_methods": [], "finish_reason": "infrastructure_interrupted_na",
+                    "summary": None, "correct": None, "outcome_status": "infrastructure_interrupted_na"})
+            continue
         raw_path = folder / "raw" / (batch["batch_id"] + ".json")
         raw = raw_batch(folder, batch, protocol_id)
         budget = None
@@ -492,6 +560,11 @@ def audit(root: Path, slot: str, include_outcomes=True):
     result = {"status": "PASS", "protocol_id": protocol_id, "slot": slot, "items": rows,
               "coverage_review": coverage_check,
               "files": hashes, "include_outcomes": include_outcomes, "scientific_evidence": manifest["scientific_evidence"]}
+    if continued:
+        result["coverage_policy"] = "report_invalid"
+        result["infrastructure_na"] = sum(r["process_reason"] == "infrastructure_interrupted_na" for r in rows)
+        for path in (folder / "dispatch").glob("*.json*"):
+            hashes[str(path.relative_to(folder))] = sha256(path)
     save(folder / ("audit.json" if include_outcomes else "gpu-audit.json"), result)
-    require(coverage_check["coverage_gate"], "full cohort coverage needs user review; audit evidence retained")
+    require(continued or coverage_check["coverage_gate"], "full cohort coverage needs user review; audit evidence retained")
     return {"status": "PASS", "slot": slot, "items": len(rows)}

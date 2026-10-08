@@ -23,6 +23,7 @@ def main():
     p.add_argument("--configs", type=Path)
     p.add_argument("--selftest", type=Path)
     p.add_argument("--recover-from", type=Path, help="Read-only sealed v1 source; never regenerate existing output")
+    p.add_argument("--continue-full-from", type=Path, help="Authorized v2 source; retain interrupted attempts as N/A, report coverage")
     p.add_argument("--cohort", choices=("original", "extension", "extension-llama3", "extension-internlm3"), default="original")
     p.add_argument("--slot", choices=tuple(greedy.SLOTS) + tuple(extension.SLOTS))
     p.add_argument("--shard", type=int)
@@ -41,6 +42,8 @@ def main():
                 check["harness_sha256"] == sha256(code_harness.__file__) and
                 check["decoder_sha256"] == sha256(code_tests.__file__), "safety selftest differs")
         expanded = args.cohort != "original"
+        require(not args.continue_full_from or (args.cohort in ("extension-llama3", "extension-internlm3") and
+                not args.recover_from), "full continuation requires one extension model")
         deployment_slot = args.cohort.removeprefix("extension-") if args.cohort.startswith("extension-") else None
         slots = ({deployment_slot: extension.SLOTS[deployment_slot]} if deployment_slot is not None
                  else extension.SLOTS if expanded else greedy.SLOTS)
@@ -113,14 +116,21 @@ def main():
                   "harness_policy": POLICY, "harness_sha256": sha256(code_harness.__file__),
                   "decoder_sha256": sha256(code_tests.__file__), "selftest_sha256": sha256(args.selftest)}
         recovery_plan = None
+        continuation_plan = None
         if args.recover_from:
             assert_project_path(args.recover_from)
             from .greedy_recovery import plan, import_sealed
             recovery_plan = plan(args.recover_from)
+        if args.continue_full_from:
+            assert_project_path(args.continue_full_from)
+            from .full_continuation import plan, import_source
+            continuation_plan = plan(args.continue_full_from)
         result = greedy.init(args.prepared, configs, policy, args.root, recovery_plan=recovery_plan,
-                             deployment_slot=deployment_slot)
+                             deployment_slot=deployment_slot, continuation_plan=continuation_plan)
         if args.recover_from:
             import_sealed(args.recover_from, args.root, recovery_plan)
+        if args.continue_full_from:
+            import_source(args.continue_full_from, args.root, continuation_plan)
         save(args.selftest.parent / "init.json", {"status": "PASS", "job_id": os.environ["SLURM_JOB_ID"],
             "run": str(args.root), "protocol_id": result["protocol_id"],
             "selftest_sha256": sha256(args.selftest),
