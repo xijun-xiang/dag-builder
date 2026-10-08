@@ -272,7 +272,14 @@ def process_batch(root: Path, slot: str, batch: dict, backend, manifest, problem
     if not raw_path.exists():
         require(not attempt.exists(), "UNCERTAIN_GENERATION_NO_RETRY: " + bid)
         save(attempt, {"protocol_id": protocol_id, "batch": batch, "job_id": os.environ.get("SLURM_JOB_ID")})
-        output = backend.generate_batch(selected, batch["seed"])
+        if isinstance(backend, E3HFBackend):
+            from .generation_journal import GenerationJournal
+            journal = GenerationJournal(folder, protocol_id, batch, backend.e3_config)
+            output = backend.generate_batch(selected, batch["seed"], on_row=journal.row,
+                                            on_progress=journal.progress)
+            journal.complete(output)
+        else:
+            output = backend.generate_batch(selected, batch["seed"])
         save(raw_path, {"protocol_id": protocol_id, "batch": batch, "output": output})
         save(folder / "receipts" / raw_path.name, {"protocol_id": protocol_id, "sha256": sha256(raw_path)})
     require(read(attempt)["protocol_id"] == protocol_id and read(attempt)["batch"] == batch, "attempt differs")

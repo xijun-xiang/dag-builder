@@ -27,10 +27,12 @@ def generation_options(cfg: dict) -> dict:
 class AnswerBoundaryTracker:
     """Track each row's first closing answer tag without repeatedly decoding its full history."""
 
-    def __init__(self, tokenizer, prompt_width: int, size: int, eos_ids: list[int]):
+    def __init__(self, tokenizer, prompt_width: int, size: int, eos_ids: list[int],
+                 on_finished=None, on_progress=None):
         self.tokenizer, self.prompt_width, self.eos_ids = tokenizer, prompt_width, set(eos_ids)
         self.lengths: list[int | None] = [None] * size
         self.reasons: list[str | None] = [None] * size
+        self.on_finished, self.on_progress = on_finished, on_progress
 
     def update(self, rows: list[list[int]]) -> list[bool]:
         require(len(rows) == len(self.lengths), "generation batch changed shape")
@@ -48,8 +50,37 @@ class AnswerBoundaryTracker:
 
     def __call__(self, input_ids, scores, **kwargs):
         import torch
-        result = self.update(input_ids.tolist())
+        # Same last-64-token detector as update(), but do not transfer the entire
+        # growing history from CUDA or build O(batch * sequence_length) Python
+        # integers on every decoding step. Prompt tokens must never enter the tail.
+        length = input_ids.shape[1] - self.prompt_width
+        require(length > 0, "stop check before a generated token")
+        tails = input_ids[:, max(self.prompt_width, input_ids.shape[1] - 64):].tolist()
+        previously_done = [n is not None for n in self.lengths]
+        result = self.update_tails(tails, length)
+        if self.on_finished is not None:
+            for index, done in enumerate(result):
+                if done and not previously_done[index]:
+                    # One full-row transfer on completion, not one per token.
+                    tokens = input_ids[index, self.prompt_width:self.prompt_width + self.lengths[index]].tolist()
+                    self.on_finished(index, tokens, self.reasons[index])
+        if self.on_progress is not None:
+            self.on_progress(length, sum(result))
         return torch.tensor(result, device=input_ids.device, dtype=torch.bool)
+
+    def update_tails(self, tails: list[list[int]], generated_length: int) -> list[bool]:
+        require(len(tails) == len(self.lengths), "generation batch changed shape")
+        require(generated_length > 0 and all(len(t) == min(64, generated_length) for t in tails),
+                "invalid stopping tail")
+        for index, tail in enumerate(tails):
+            if self.lengths[index] is not None:
+                continue
+            text = self.tokenizer.decode(tail, skip_special_tokens=True)
+            if "</answer>" in text:
+                self.lengths[index], self.reasons[index] = generated_length, "boundary"
+            elif tail[-1] in self.eos_ids:
+                self.lengths[index], self.reasons[index] = generated_length, "eos"
+        return [length is not None for length in self.lengths]
 
 
 class E3HFBackend(HFBackend):
@@ -78,7 +109,7 @@ class E3HFBackend(HFBackend):
                              "full_context_ids": full_ids, "deleted_context_ids": deleted_ids,
                              "full_logprobs": full, "deleted_logprobs": deleted}}
 
-    def generate_batch(self, problems: list[dict], seed: int) -> dict:
+    def generate_batch(self, problems: list[dict], seed: int, *, on_row=None, on_progress=None) -> dict:
         from transformers import GenerationConfig, StoppingCriteriaList
         torch = self.torch
         require(1 <= len(problems) <= self.e3_config["generation"]["batch_size"],
@@ -106,7 +137,25 @@ class E3HFBackend(HFBackend):
         device = self.config["device"]
         input_ids = torch.tensor(padded, dtype=torch.long, device=device)
         attention = torch.tensor(masks, dtype=torch.long, device=device)
-        tracker = AnswerBoundaryTracker(self.tokenizer, width, len(problems), eos_ids)
+        def make_row(index, actual, reason):
+            text = self.tokenizer.decode(actual, skip_special_tokens=True)
+            return {"problem_id": problems[index]["problem_id"], "raw_text": text,
+                    "generated_token_ids": actual, "finish_reason": reason,
+                    "parse": parse_trace(text, reason), "prompt": prompts[index],
+                    "prompt_token_ids": ids[index], "prompt_width": width,
+                    "left_pad_tokens": width - len(ids[index]), "stop_token_length": len(actual)}
+
+        completed_rows = {}
+        def finish_row(index, actual, reason):
+            row = make_row(index, actual, reason)
+            require(index not in completed_rows, "row completed twice")
+            completed_rows[index] = row
+            if on_row is not None:
+                on_row(row)
+
+        tracker = AnswerBoundaryTracker(self.tokenizer, width, len(problems), eos_ids,
+                                        on_finished=finish_row if on_row is not None else None,
+                                        on_progress=on_progress)
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
@@ -125,13 +174,12 @@ class E3HFBackend(HFBackend):
             else:
                 cut, reason = tracker.lengths[index], tracker.reasons[index]
             actual = produced[:cut]
-            text = self.tokenizer.decode(actual, skip_special_tokens=True)
-            rows.append({"problem_id": problem["problem_id"], "raw_text": text,
-                         "generated_token_ids": actual, "finish_reason": reason,
-                         "parse": parse_trace(text, reason), "prompt": prompts[index],
-                         "prompt_token_ids": ids[index], "prompt_width": width,
-                         "left_pad_tokens": width - len(ids[index]),
-                         "stop_token_length": cut})
+            row = make_row(index, actual, reason)
+            if index in completed_rows:
+                require(completed_rows[index] == row, "checkpoint differs from final generation")
+            elif on_row is not None:
+                finish_row(index, actual, reason)
+            rows.append(row)
         output = {"seed": seed, "batch_size": len(rows), "rows": rows,
                 "generation_contract": {"boundary": "</answer>", "max_new_tokens": budget,
                     "max_context": self.config["max_context"], "eos_token_ids": eos_ids,
