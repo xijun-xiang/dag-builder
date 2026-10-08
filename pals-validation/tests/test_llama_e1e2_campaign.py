@@ -81,7 +81,7 @@ class LlamaCampaignTests(unittest.TestCase):
     def test_ten_held_serial_jobs_reverse_release_and_no_repeat(self):
         with self.scheduler() as (root,states,submitted,released),patch.dict(os.environ,{'SBATCH_GRES':'gpu:99'}):
             jobs=M.submit(); self.assertEqual(len(jobs),10); self.assertEqual(released,[])
-            self.assertEqual(states['101']['Dependency'],'(null)')
+            self.assertEqual(states['101']['Dependency'],'afterok:'+M.E3_JOBS[-1])
             for j in range(102,111): self.assertEqual(states[str(j)]['Dependency'],f'afterok:{j-1}')
             M.release(); self.assertEqual(released,[str(i) for i in range(110,100,-1)])
             with self.assertRaisesRegex(ValueError,'existing/uncertain'): M.submit()
@@ -126,6 +126,67 @@ class LlamaCampaignTests(unittest.TestCase):
             states['900']={'JobName':'e3g-internlm3-gpu'}
             with self.assertRaisesRegex(ValueError,'another B1'): M.submit()
             self.assertEqual(submitted,[])
+
+    def test_only_exact_current_e3_chain_may_coexist_with_queued_campaign(self):
+        with self.scheduler() as (_,states,submitted,_):
+            states[M.E3_JOBS[0]]={'JobName':'e3g-internlm3-gpu'}
+            states[M.E3_JOBS[1]]={'JobName':'e3g-internlm3-evaluate'}
+            M.submit()
+            self.assertEqual(len(submitted),10)
+            self.assertIn('--dependency=afterok:'+M.E3_JOBS[-1],submitted[0])
+
+    @contextmanager
+    def predecessor(self):
+        with tempfile.TemporaryDirectory() as d:
+            project=Path(d).resolve(); e3=project/'e3'
+            (e3/'submissions').mkdir(parents=True); (e3/'experiment/internlm3').mkdir(parents=True)
+            save(e3/'submissions/full-chain.json',[
+                {'job_id':j,'stage':stage,'slot':'internlm3','protocol_id':M.E3_PROTOCOL}
+                for j,stage in zip(M.E3_JOBS,('gpu','evaluate'))])
+            save(e3/'submissions/released.json',{'status':'RELEASED','job_ids':list(M.E3_JOBS)})
+            save(e3/'experiment/manifest.json',{'protocol_id':M.E3_PROTOCOL,
+                'counts':{'gpqa':198,'gsm8k':1319,'humaneval':164,'livecodebench':175,'mmlu':14042},
+                'full_continuation':{'execution':{'coverage_policy':'report_invalid'}}})
+            states={M.E3_JOBS[0]:['RUNNING','0:0'],M.E3_JOBS[1]:['PENDING','0:0']}
+            def accounting(cmd,**kw):
+                self.assertEqual(cmd[0],'sacct')
+                return '\n'.join('|'.join([j,*s]) for j,s in states.items())
+            with patch.object(M,'PROJECT',project),patch.object(M,'E3',e3), \
+                 patch.object(M.subprocess,'check_output',side_effect=accounting):
+                yield e3,states
+
+    def test_queueing_is_not_completion_and_failure_is_not_ignored(self):
+        with self.predecessor() as (_,states):
+            identity=M.e3_gate()
+            self.assertEqual(identity['jobs'],list(M.E3_JOBS))
+            with self.assertRaisesRegex(ValueError,'scheduler gate'):
+                M.e3_gate(completed=True)
+            states[M.E3_JOBS[0]]=['FAILED','1:0']
+            with self.assertRaisesRegex(ValueError,'predecessor failed'):
+                M.e3_gate()
+
+    def test_full_integrity_pass_not_effect_direction_or_high_coverage_is_required(self):
+        with self.predecessor() as (e3,states):
+            for j in M.E3_JOBS:
+                for suffix in ('','.batch','.0'):states[j+suffix]=['COMPLETED','0:0']
+            states[M.E3_JOBS[0]+'.1']=['FAILED','6:0']  # Recorded telemetry, not scientific .0.
+            audit={'status':'PASS','include_outcomes':True,'scientific_evidence':True,
+                   'coverage_policy':'report_invalid','coverage_review':{'coverage_gate':False},
+                   'items':[{}]*15898,'slot':'internlm3','protocol_id':M.E3_PROTOCOL}
+            save(e3/'experiment/internlm3/audit.json',audit)
+            self.assertIn('audit_sha256',M.e3_gate(completed=True))
+            audit['items'].pop()
+            (e3/'experiment/internlm3/audit.json').unlink()  # Temporary fixture only.
+            save(e3/'experiment/internlm3/audit.json',audit)
+            with self.assertRaisesRegex(ValueError,'application gate'):
+                M.e3_gate(completed=True)
+
+    def test_runtime_cannot_start_without_matching_admission(self):
+        with self.scheduler() as (root,_,_,_),patch.dict(os.environ,{'SLURM_JOB_ID':'101'}):
+            slot=M.slot_root('gpqa','e1');slot.mkdir(parents=True)
+            with self.assertRaises(FileNotFoundError):M.runtime('gpqa','e1')
+            save(slot/'runtime-admission.json',{'status':'PASS','job_id':'999','e3':{'protocol_id':M.E3_PROTOCOL}})
+            with self.assertRaisesRegex(ValueError,'not admitted'):M.runtime('gpqa','e1')
 
     def test_safe_paths_reject_escape_and_symlink(self):
         with tempfile.TemporaryDirectory() as d:

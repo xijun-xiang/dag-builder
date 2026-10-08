@@ -3,7 +3,7 @@
 set -euo pipefail
 umask 077
 : "${PALS_REPO:?}" "${PALS_CAMPAIGN_ROOT:?}" "${PALS_BENCHMARK:?}" "${PALS_EXPERIMENT:?}"
-test "$PALS_CAMPAIGN_ROOT" = /work/projects/polyullm/xxj/PALS/runs/20261008-llama-fivebench-e1e2-v1
+test "$PALS_CAMPAIGN_ROOT" = /work/projects/polyullm/xxj/PALS/runs/20261009-llama-fivebench-e1e2-v2
 case "$PALS_REPO" in /work/projects/polyullm/xxj/PALS/src/*/pals-validation) ;; *) exit 64 ;; esac
 case "$PALS_BENCHMARK" in gpqa|humaneval|gsm8k|livecodebench|mmlu) ;; *) exit 64 ;; esac
 case "$PALS_EXPERIMENT" in e1|e2) ;; *) exit 64 ;; esac
@@ -16,8 +16,10 @@ export ENROOT_RUNTIME_PATH="$PALS_TARGET/scratch/enroot-runtime"
 export PATH=/cm/local/apps/slurm/current/bin:$PATH
 export SLURM_CONF=/cm/shared/apps/slurm/etc/slurm/slurm.conf
 cd "$PALS_TARGET"
+export PYTHONPATH="$PALS_REPO/src" PYTHONDONTWRITEBYTECODE=1
+python3 "$PALS_REPO/scripts/e1e2_llama_campaign.py" admit-runtime --benchmark "$PALS_BENCHMARK" --experiment "$PALS_EXPERIMENT"
 srun --container-image=/lustre/projects/polyullm/container/lmsysorg+sglang+v0.5.12+infix+v6.sqsh \
- --container-mounts="$PALS_REPO:$PALS_REPO:ro,/work/projects/polyullm/xxj/PALS/models/hf:/work/projects/polyullm/xxj/PALS/models/hf:ro,/work/projects/polyullm/xxj/PALS/runs/20261003-internlm-fivebench-e1e2-v1/spec.json:/work/projects/polyullm/xxj/PALS/runs/20261003-internlm-fivebench-e1e2-v1/spec.json:ro,$PALS_CAMPAIGN_ROOT:$PALS_CAMPAIGN_ROOT:rw" \
+ --container-mounts="$PALS_REPO:$PALS_REPO:ro,/work/projects/polyullm/xxj/PALS/models/hf:/work/projects/polyullm/xxj/PALS/models/hf:ro,/work/projects/polyullm/xxj/PALS/runs/20261003-internlm-fivebench-e1e2-v1/spec.json:/work/projects/polyullm/xxj/PALS/runs/20261003-internlm-fivebench-e1e2-v1/spec.json:ro,/work/projects/polyullm/xxj/PALS/runs/20261008-llama-fivebench-e1e2-v1:/work/projects/polyullm/xxj/PALS/runs/20261008-llama-fivebench-e1e2-v1:ro,$PALS_CAMPAIGN_ROOT:$PALS_CAMPAIGN_ROOT:rw" \
  --container-workdir="$PALS_TARGET" --container-remap-root --no-container-mount-home \
  bash -c '
 set -euo pipefail

@@ -1,7 +1,7 @@
 """One-shot B1 Llama campaign; unchanged historical E1/E2 engine and inputs.
 
-prepare is CPU/file-only. submit/release require completed B1 InternLM E3;
-runtime runs the existing canary then formal campaign in one allocation.
+prepare is CPU/file-only. submit/release queue behind the frozen B1 E3 chain;
+admit-runtime requires completed E3 before the unchanged canary/formal engine.
 No retry/resume, A1 dependency, candidate-code execution, or new DAG selection.
 """
 import argparse
@@ -18,10 +18,13 @@ from pals_validation.run import code_hashes, validate_config
 
 PROJECT = Path('/work/projects/polyullm/xxj/PALS')
 OLD = PROJECT / 'runs/20261003-internlm-fivebench-e1e2-v1'
-ROOT = PROJECT / 'runs/20261008-llama-fivebench-e1e2-v1'
+ROOT = PROJECT / 'runs/20261009-llama-fivebench-e1e2-v2'
+PREVIOUS_ROOT = PROJECT / 'runs/20261008-llama-fivebench-e1e2-v1'
 WEIGHTS = PROJECT / 'runs/20261008-llama-e1e2-weights-v1'
 CONTEXT = PROJECT / 'runs/20261008-llama-e1e2-context-v1'
-E3 = PROJECT / 'runs/20261008-e3-internlm-b1-v1'
+E3 = PROJECT / 'runs/20261009-e3-full-internlm-b1-v1'
+E3_JOBS = ('115000', '115001')
+E3_PROTOCOL = '42d005583186ea38bd57141a3a2b4493e18a843bacb1ac37c7ae047099c8626a'
 REPO = Path(__file__).resolve().parents[1]
 SPEC_SHA = '54419278650427638ce329c502c4de40d5736d17cfbfd6d4ef0224cdbe63d01f'
 PLAN_SHA = '53f2de52a2cd8cfd0f891c8917797e77792a81b20204db1e51a38a2ccbf89586'
@@ -117,6 +120,7 @@ def prepare():
             'freeze/commit source before deployment')
     safe(ROOT, existing=False)
     require(not ROOT.exists(), 'existing/partial deployment; never overwrite')
+    require(not list(safe(PREVIOUS_ROOT / 'submissions').iterdir()), 'old campaign has submission evidence')
     for b in BENCHES:
         for role, item in spec['benchmarks'][b]['inputs'].items():
             verify(safe(OLD / 'prepared' / b / role), item['files'])
@@ -160,6 +164,19 @@ def prepare():
          'launcher_sha256': sha256(LAUNCHER), 'model_files': model_files, 'runtime': context['runtime'],
          'weight_receipt_sha256': sha256(WEIGHTS / 'completion.json'),
          'context_receipt_sha256': sha256(CONTEXT / 'completion.json'), 'denominators': denominators})
+    # The prior prepared campaign has never run. Prove all ten scientific
+    # configurations and all input hashes are identical rather than infer it.
+    previous = read(safe(PREVIOUS_ROOT / 'deployment.json'))
+    require(previous['denominators'] == denominators and previous['model_files'] == model_files
+            and previous['code_hashes'] == code_hashes(), 'previous science identity differs')
+    for b, e in SLOTS:
+        require(read(safe(PREVIOUS_ROOT / b / e / 'llama3-8b/config.json')) ==
+                read(slot_root(b, e) / 'config.json'), 'previous configuration differs')
+    for b in BENCHES:
+        for role, inp in spec['benchmarks'][b]['inputs'].items():
+            verify(safe(PREVIOUS_ROOT / 'prepared' / b / role), inp['files'])
+    save(ROOT / 'previous-preparation.json', {'status':'IDENTICAL_SCIENCE',
+         'path':str(PREVIOUS_ROOT), 'deployment_sha256':sha256(PREVIOUS_ROOT / 'deployment.json')})
 
 
 def check():
@@ -168,6 +185,11 @@ def check():
             and declared['controller_sha256'] == sha256(Path(__file__))
             and declared['launcher_sha256'] == sha256(LAUNCHER), 'deployed source changed')
     require(sha256(ROOT / 'legacy-spec.json') == SPEC_SHA, 'copied spec changed')
+    previous = read(safe(ROOT / 'previous-preparation.json'))
+    require(previous['status'] == 'IDENTICAL_SCIENCE' and previous['path'] == str(PREVIOUS_ROOT)
+            and sha256(safe(PREVIOUS_ROOT / 'deployment.json')) == previous['deployment_sha256'],
+            'previous preparation identity changed')
+    require(not list(safe(PREVIOUS_ROOT / 'submissions').iterdir()), 'old campaign has submission evidence')
     for b in BENCHES:
         for role, inp in spec['benchmarks'][b]['inputs'].items():
             verify(safe(ROOT / 'prepared' / b / role), inp['files'])
@@ -180,17 +202,43 @@ def check():
     return declared
 
 
-def e3_gate():
-    for job in (114963, 114964):
+def e3_gate(completed=False):
+    """Pending is admissible only for queueing, never for scientific completion."""
+    chain_path = safe(E3 / 'submissions/full-chain.json')
+    chain = read(chain_path)
+    require([(x['job_id'], x['stage'], x['slot'], x['protocol_id']) for x in chain] ==
+            [(E3_JOBS[0], 'gpu', 'internlm3', E3_PROTOCOL),
+             (E3_JOBS[1], 'evaluate', 'internlm3', E3_PROTOCOL)], 'E3 chain identity differs')
+    require(read(safe(E3 / 'submissions/released.json')) ==
+            {'status':'RELEASED', 'job_ids':list(E3_JOBS)}, 'E3 chain not released')
+    manifest_path = safe(E3 / 'experiment/manifest.json')
+    manifest = read(manifest_path)
+    require(manifest['protocol_id'] == E3_PROTOCOL and manifest['counts'] ==
+            {'gpqa':198, 'gsm8k':1319, 'humaneval':164, 'livecodebench':175, 'mmlu':14042},
+            'E3 manifest identity differs')
+    require(manifest['full_continuation']['execution']['coverage_policy'] == 'report_invalid',
+            'E3 coverage policy changed')
+    rows = subprocess.check_output(['sacct', '-j', ','.join(E3_JOBS), '-Pn',
+                                   '--format=JobID,State,ExitCode'], text=True)
+    states = {r[0]:r[1:] for line in rows.splitlines() if (r := line.split('|'))[0] in E3_JOBS}
+    require(set(states) == set(E3_JOBS) and all(v[0] in ('PENDING','RUNNING','COMPLETED')
+            and v[1] == '0:0' for v in states.values()), 'E3 predecessor failed or unknown')
+    identity = {'jobs':list(E3_JOBS), 'protocol_id':E3_PROTOCOL,
+                'chain_sha256':sha256(chain_path), 'manifest_sha256':sha256(manifest_path)}
+    if not completed:
+        return identity
+    for job in E3_JOBS:
+        # Additional bounded monitoring steps are recorded separately. The
+        # scientific executable is .0; a no-GPU telemetry probe failed with 6.
         scheduler_complete(job)
     audit_path = safe(E3 / 'experiment/internlm3/audit.json')
     audit = read(audit_path)
     require(audit['status'] == 'PASS' and audit['include_outcomes'] is True
-            and audit['scientific_evidence'] is True and audit['coverage_review']['coverage_gate'] is True
+            and audit['scientific_evidence'] is True and audit['coverage_policy'] == 'report_invalid'
             and len(audit['items']) == 15898 and audit['slot'] == 'internlm3'
-            and audit['protocol_id'] == 'fa693c265ea4985325ae724f34ed994a1859a113d55ea4de3d9d20f04640924c',
+            and audit['protocol_id'] == E3_PROTOCOL,
             'B1 E3 application gate failed')
-    return {'audit_sha256': sha256(audit_path), 'jobs': ['114963', '114964']}
+    return {**identity, 'audit_sha256':sha256(audit_path)}
 
 
 def command(index, previous):
@@ -220,9 +268,9 @@ def submit():
     ledger = safe(ROOT / 'submissions')
     with exclusive_lock(ledger / 'submit.lock'):
         require(not list(ledger.glob('*attempt.json')), 'existing/uncertain submission; no retry')
-        active_guard()
+        active_guard(E3_JOBS)
         save(ledger / 'prerequisite.json', prerequisite)
-        previous, records = None, []
+        previous, records = E3_JOBS[-1], []
         for index, (b, e) in enumerate(SLOTS):
             cmd = command(index, previous)
             env = {k: v for k, v in os.environ.items() if not k.startswith(('SBATCH_', 'PALS_'))}
@@ -273,8 +321,8 @@ def release():
         jobs = read(ledger / 'full-chain.json')
         require([j['index'] for j in jobs] == list(range(10)) and len({j['job_id'] for j in jobs}) == 10,
                 'incomplete/duplicate chain')
-        active_guard({j['job_id'] for j in jobs})
-        states, previous = {}, None
+        active_guard({j['job_id'] for j in jobs} | set(E3_JOBS))
+        states, previous = {}, E3_JOBS[-1]
         for record in jobs:
             require(record == read(ledger / f"{record['index']}-submitted.json"), 'receipt mismatch')
             states[record['job_id']] = verify_held(record, previous)
@@ -288,9 +336,25 @@ def release():
         save(ledger / 'released.json', {'status':'RELEASED', 'job_ids':[j['job_id'] for j in jobs]})
 
 
+def admit_runtime(benchmark, experiment):
+    require(os.environ.get('SLURM_JOB_ID') and (benchmark, experiment) in SLOTS, 'allocated known slot required')
+    check()
+    complete = e3_gate(completed=True)
+    require({k:v for k,v in complete.items() if k != 'audit_sha256'} ==
+            read(ROOT / 'submissions/prerequisite.json'), 'E3 prerequisite changed')
+    record = read(ROOT / 'submissions/full-chain.json')[SLOTS.index((benchmark, experiment))]
+    require(record['job_id'] == os.environ['SLURM_JOB_ID'], 'wrong allocated job')
+    target = slot_root(benchmark, experiment) / 'runtime-admission.json'
+    require(not target.exists(), 'runtime admission already attempted')
+    save(target, {'status':'PASS', 'job_id':record['job_id'], 'e3':complete})
+
+
 def runtime(benchmark, experiment):
     require(os.environ.get('SLURM_JOB_ID') and (benchmark, experiment) in SLOTS, 'allocated known slot required')
     declared = check()
+    admission = read(safe(slot_root(benchmark, experiment) / 'runtime-admission.json'))
+    require(admission['status'] == 'PASS' and admission['job_id'] == os.environ['SLURM_JOB_ID']
+            and admission['e3']['protocol_id'] == E3_PROTOCOL, 'runtime not admitted')
     verify(MODEL, declared['model_files'])  # compute node only
     slot = slot_root(benchmark, experiment)
     require(not (slot / 'campaign.json').exists(), 'existing attempt; no resume')
@@ -300,7 +364,7 @@ def runtime(benchmark, experiment):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('prepare', 'check', 'submit', 'release', 'runtime'))
+    p.add_argument('action', choices=('prepare', 'check', 'submit', 'release', 'admit-runtime', 'runtime'))
     p.add_argument('--benchmark', choices=BENCHES)
     p.add_argument('--experiment', choices=('e1', 'e2'))
     a = p.parse_args()
@@ -308,7 +372,9 @@ if __name__ == '__main__':
     os.environ['PATH'] = '/cm/local/apps/slurm/current/bin:' + os.environ['PATH']
     os.environ['SLURM_CONF'] = '/cm/shared/apps/slurm/etc/slurm/slurm.conf'
     safe(REPO)
-    if a.action == 'runtime':
+    if a.action == 'admit-runtime':
+        admit_runtime(a.benchmark, a.experiment)
+    elif a.action == 'runtime':
         runtime(a.benchmark, a.experiment)
     else:
         result = globals()[a.action]()
