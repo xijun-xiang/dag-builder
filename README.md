@@ -2,6 +2,13 @@
 
 将题目与解答转化为**可追溯、可审核的推理 DAG**。
 
+## 当前版本说明（2026-10-13）
+
+本仓库保留构图、PALS E1/E2/E3 及各次修复的原始工程历史，不将旧协议覆盖成新协议。
+五模型正式实验的当前代码入口、最终解析口径及匿名复现整理边界见
+[当前工程索引](docs/CURRENT_REPRODUCTION_STATE.md)。下文带日期的先导记录是历史快照，
+其中“尚未验收”不代表当前总进度。真实实验产物继续在独立私有归档中保留，不随代码更新上传。
+
 独立 Python 工具，使用模型 API 完成原子步骤拆分、依赖标注、推理解释和审核。无需 EvalScope、GPU 或 Slurm。支持 MMLU、GSM8K 与 GPQA-Diamond；不是任意 JSONL 的通用清洗器。
 
 新增 [HumanEval 参考代码解释与 PALS E1/E2](docs/humaneval-validation.md)：本地官方数据导入、模型解释/审核、候选 DAG 导出；不执行代码。另见 [v4 质量门槛与分流回捞](docs/humaneval-recovery.md)：来源别名无损归一化、自包含步骤、根前提审查，以及新目录中的单轮修订。[诊断式全量回捞](docs/humaneval-diagnosed-repair.md)区分重建图、修订解释和源题隔离，不重复生成已接受候选。真实构图产出不等于 PALS canary 通过。
